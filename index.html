@@ -755,7 +755,20 @@ inputEl.addEventListener('input', () => {
     return;
   }
   renderSentences(inputEl.value);
+  saveHistory(inputEl.value);
 });
+
+let historyTimer = null;
+function saveHistory(text) {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(() => {
+    let hist = JSON.parse(localStorage.getItem('yueHistory') || '[]');
+    if (hist.length && hist[0].text === text) return;
+    hist.unshift({ text, time: Date.now() });
+    if (hist.length > 50) hist = hist.slice(0, 50);
+    localStorage.setItem('yueHistory', JSON.stringify(hist));
+  }, 800);
+}
 
 function splitSentences(text) {
   const sents = []; let cur = '';
@@ -869,7 +882,15 @@ clearBtn.addEventListener('click', () => {
 
 function addHistory(orig, translated) {
   let hist = JSON.parse(localStorage.getItem('yueHistory') || '[]');
-  hist.unshift({ orig, translated, time: Date.now() });
+  const idx = hist.findIndex(h => h.text === orig);
+  if (idx >= 0) {
+    hist[idx].translated = translated;
+    hist[idx].time = Date.now();
+    const item = hist.splice(idx, 1)[0];
+    hist.unshift(item);
+  } else {
+    hist.unshift({ text: orig, translated, time: Date.now() });
+  }
   if (hist.length > 50) hist = hist.slice(0, 50);
   localStorage.setItem('yueHistory', JSON.stringify(hist));
 }
@@ -886,13 +907,14 @@ function renderHistory() {
     div.className = 'history-item';
     const d = new Date(h.time);
     const timeStr = `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
-    div.innerHTML = `<span class="text" title="${h.orig}">${h.orig}</span><span class="time">${timeStr}</span>`;
+    const label = h.translated ? `📝 ${h.text}` : `📄 ${h.text}`;
+    div.innerHTML = `<span class="text" title="${h.text}">${label}</span><span class="time">${timeStr}</span>`;
     div.addEventListener('click', () => {
-      inputEl.value = h.translated;
-      charCount.textContent = [...h.translated].length;
-      renderSentences(h.translated);
+      inputEl.value = h.translated || h.text;
+      charCount.textContent = [...(h.translated || h.text)].length;
+      renderSentences(h.translated || h.text);
       historyModal.classList.remove('show');
-      showToast('已加载历史记录');
+      showToast('已加载');
     });
     historyList.appendChild(div);
   }
