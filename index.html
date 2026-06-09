@@ -38,8 +38,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .range-wrap input[type=range]{width:64px;height:4px;accent-color:var(--primary)}
 .range-wrap .rv{min-width:28px;text-align:center;font-weight:600;color:var(--primary);font-size:.78rem}
 .segments-wrapper{min-height:60px}
-.segments{display:flex;flex-wrap:wrap;gap:6px;padding:8px 0;line-height:1;font-size:var(--seg-size,1.15rem)}
-.segment{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--tile-bg);color:var(--tile-text);cursor:pointer;transition:all .12s;touch-action:manipulation;-webkit-user-select:none;user-select:none;border:1px solid transparent;word-break:keep-all}
+.sgroup{margin-bottom:10px;border-left:3px solid var(--primary);padding-left:10px;border-radius:0 8px 8px 0;transition:background .15s,border-color .15s}
+.sgroup.active{border-left-color:var(--tile-active);background:#f0f4fc}
+.shdr{padding:6px 8px;cursor:pointer;font-size:var(--seg-size,1.15rem);font-weight:600;color:var(--primary);border-radius:6px;transition:background .12s;-webkit-user-select:none;user-select:none;touch-action:manipulation}
+.shdr:hover{background:var(--tile-bg)}
+.shdr:active,.shdr.playing{background:var(--tile-active);color:#fff}
+.stiles{display:flex;flex-wrap:wrap;gap:4px;padding:4px 8px 8px}
+.segment{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--tile-bg);color:var(--tile-text);cursor:pointer;transition:all .12s;touch-action:manipulation;-webkit-user-select:none;user-select:none;border:1px solid transparent;word-break:keep-all;font-size:var(--seg-size,1.15rem)}
 .placeholder-text{color:var(--text-light);font-size:.9rem;text-align:center;padding:24px 0}
 .status-bar{font-size:.8rem;color:var(--text-light);margin-top:8px;min-height:1.2em;transition:opacity .3s}
 .footer{display:flex;gap:8px;justify-content:center;padding:8px 0 20px}
@@ -715,8 +720,7 @@ const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const statusBar = document.getElementById('statusBar');
 const toast = document.getElementById('toast');
 
-let currentSegments = [];
-let playingIndex = -1;
+let currentSentences = [];
 
 function showToast(msg) {
   toast.textContent = msg;
@@ -730,46 +734,85 @@ inputEl.addEventListener('input', () => {
   charCount.textContent = len;
   if (!inputEl.value.trim()) {
     segContainer.innerHTML = '<div class="placeholder-text">👆 在上方输入文本，点击「转白话」或直接开始学习</div>';
-    currentSegments = [];
+    currentSentences = [];
     return;
   }
-  renderSegments(inputEl.value);
+  renderSentences(inputEl.value);
 });
 
-function renderSegments(text) {
-  currentSegments = segmentText(text);
+function splitSentences(text) {
+  const sents = []; let cur = '';
+  for (const ch of text) {
+    cur += ch;
+    if (/[。！？\n\r]/.test(ch) && cur.trim().length > 1) { sents.push(cur.trim()); cur = ''; }
+  }
+  if (cur.trim()) sents.push(cur.trim());
+  return sents.length ? sents : [text];
+}
+
+function renderSentences(text) {
+  const sents = splitSentences(text);
   segContainer.innerHTML = '';
-  for (let i = 0; i < currentSegments.length; i++) {
-    const s = currentSegments[i];
-    const el = document.createElement('span');
-    el.className = 'segment ' + s.type;
-    if (s.type === 'space') {
-      el.innerHTML = '&nbsp;';
-    } else {
-      el.textContent = s.text;
+  currentSentences = [];
+  for (let si = 0; si < sents.length; si++) {
+    const words = segmentText(sents[si]);
+    currentSentences.push({ text: sents[si], words });
+    const group = document.createElement('div');
+    group.className = 'sgroup';
+    const hdr = document.createElement('div');
+    hdr.className = 'shdr';
+    hdr.textContent = '🔊 ' + sents[si];
+    hdr.dataset.si = si;
+    hdr.addEventListener('click', () => playSentence(si));
+    hdr.addEventListener('touchend', (e) => { e.preventDefault(); playSentence(si); });
+    group.appendChild(hdr);
+    const tiles = document.createElement('div');
+    tiles.className = 'stiles';
+    for (let wi = 0; wi < words.length; wi++) {
+      const w = words[wi];
+      const el = document.createElement('span');
+      el.className = 'segment ' + w.type;
+      if (w.type === 'space') { el.innerHTML = '&nbsp;'; }
+      else { el.textContent = w.text; }
+      if (w.type !== 'punct' && w.type !== 'space') {
+        el.dataset.si = si; el.dataset.wi = wi;
+        el.addEventListener('click', () => playWord(si, wi));
+        el.addEventListener('touchend', (e) => { e.preventDefault(); playWord(si, wi); });
+      }
+      tiles.appendChild(el);
     }
-    if (s.type !== 'punct' && s.type !== 'space') {
-      el.dataset.index = i;
-      el.addEventListener('click', () => playSegment(i));
-      el.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        playSegment(i);
-      });
-    }
-    segContainer.appendChild(el);
+    group.appendChild(tiles);
+    segContainer.appendChild(group);
   }
 }
 
-async function playSegment(index) {
-  const seg = currentSegments[index];
-  if (!seg || seg.type === 'punct' || seg.type === 'space') return;
-  stopSpeak();
-  const segEls = segContainer.querySelectorAll('.segment');
-  segEls.forEach(el => el.classList.remove('playing'));
-  const el = segEls[index];
-  if (el) el.classList.add('playing');
-  playingIndex = index;
-  await speak(seg.text, parseFloat(speedRange.value));
+function clearHighlight() {
+  segContainer.querySelectorAll('.shdr.playing, .segment.playing').forEach(el => el.classList.remove('playing'));
+  segContainer.querySelectorAll('.sgroup.active').forEach(el => el.classList.remove('active'));
+}
+
+async function playSentence(si) {
+  const s = currentSentences[si];
+  if (!s) return;
+  stopSpeak(); clearHighlight();
+  const groups = segContainer.querySelectorAll('.sgroup');
+  if (groups[si]) groups[si].classList.add('active');
+  const hdrs = segContainer.querySelectorAll('.shdr');
+  if (hdrs[si]) hdrs[si].classList.add('playing');
+  await speak(s.text, parseFloat(speedRange.value));
+}
+
+async function playWord(si, wi) {
+  const s = currentSentences[si];
+  if (!s || !s.words[wi]) return;
+  const w = s.words[wi];
+  if (w.type === 'punct' || w.type === 'space') return;
+  stopSpeak(); clearHighlight();
+  const groups = segContainer.querySelectorAll('.sgroup');
+  if (groups[si]) groups[si].classList.add('active');
+  const tiles = groups[si]?.querySelectorAll('.segment');
+  if (tiles?.[wi]) tiles[wi].classList.add('playing');
+  await speak(w.text, parseFloat(speedRange.value));
 }
 
 translateBtn.addEventListener('click', () => {
@@ -778,18 +821,17 @@ translateBtn.addEventListener('click', () => {
   const ct = toCantonese(text);
   inputEl.value = ct;
   charCount.textContent = [...ct].length;
-  renderSegments(ct);
+  renderSentences(ct);
   addHistory(text, ct);
   showToast('✅ 已转换为白话');
 });
 
 speakAllBtn.addEventListener('click', async () => {
-  const texts = currentSegments.filter(s => s.type !== 'space').map(s => s.text);
-  if (!texts.length) { showToast('没有可朗读的内容'); return; }
-  stopSpeak();
+  const text = inputEl.value.trim();
+  if (!text) { showToast('没有可朗读的内容'); return; }
+  stopSpeak(); clearHighlight();
   const rate = parseFloat(speedRange.value);
-  let fullText = texts.join('');
-  await speak(fullText, rate);
+  await speak(text, rate);
   statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
 });
 
@@ -803,7 +845,7 @@ clearBtn.addEventListener('click', () => {
   inputEl.value = '';
   charCount.textContent = '0';
   segContainer.innerHTML = '<div class="placeholder-text">👆 在上方输入文本，点击「转白话」或直接开始学习</div>';
-  currentSegments = [];
+  currentSentences = [];
   stopSpeak();
   statusBar.textContent = '';
 });
@@ -831,7 +873,7 @@ function renderHistory() {
     div.addEventListener('click', () => {
       inputEl.value = h.translated;
       charCount.textContent = [...h.translated].length;
-      renderSegments(h.translated);
+      renderSentences(h.translated);
       historyModal.classList.remove('show');
       showToast('已加载历史记录');
     });
