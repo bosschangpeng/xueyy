@@ -335,18 +335,12 @@ function pickCantonese(voices) {
   return voices.find(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue')) || null;
 }
 
-// Split text into small readable chunks (Chrome cuts off ~200 chars)
 function chunkText(text) {
-  const chunks = [];
-  let cur = '';
+  const chunks = []; let cur = '';
   for (const ch of text) {
-    if (/[。！？，、；：\n\r]/.test(ch) && cur.length > 5) {
-      cur += ch; chunks.push(cur); cur = '';
-    } else if (cur.length >= 60) {
-      chunks.push(cur); cur = ch;
-    } else {
-      cur += ch;
-    }
+    if (/[。！？，、；：\n\r]/.test(ch) && cur.length > 5) { cur += ch; chunks.push(cur); cur = ''; }
+    else if (cur.length >= 60) { chunks.push(cur); cur = ch; }
+    else { cur += ch; }
   }
   if (cur) chunks.push(cur);
   return chunks.length ? chunks : [text];
@@ -356,32 +350,33 @@ async function speak(text, rate = 1) {
   if (!text) return;
   stopSpeak();
   const parts = chunkText(text);
-  let idx = 0;
-
   if (!('speechSynthesis' in window)) return speakOnline(text, rate);
 
   const voice = await getCantoneseVoice();
   if (!voice) return speakOnline(text, rate);
 
+  for (let i = 0; i < parts.length; i++) {
+    const ok = await speakOne(parts[i], rate, voice, i, parts.length);
+    if (!ok) break;
+  }
+  statusBar.textContent = `✅ "${text}"`;
+}
+
+function speakOne(text, rate, voice, idx, total) {
   return new Promise(resolve => {
-    function speakNext() {
-      if (idx >= parts.length) {
-        currentUtterance = null;
-        statusBar.textContent = `✅ "${text}"`;
-        resolve();
-        return;
-      }
-      const u = new SpeechSynthesisUtterance(parts[idx]);
-      u.lang = 'zh-HK';
-      u.rate = Math.max(0.1, Math.min(10, rate));
-      u.voice = voice;
-      statusBar.textContent = `🔊 发音中 (${idx+1}/${parts.length}): "${parts[idx]}"`;
-      currentUtterance = u;
-      u.onend = () => { idx++; speakNext(); };
-      u.onerror = () => { idx++; speakNext(); };
-      window.speechSynthesis.speak(u);
-    }
-    speakNext();
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'zh-HK';
+    u.rate = Math.max(0.1, Math.min(10, rate));
+    u.voice = voice;
+    currentUtterance = u;
+    statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
+    u.onend = () => { currentUtterance = null; resolve(true); };
+    u.onerror = () => { currentUtterance = null; resolve(false); };
+    window.speechSynthesis.speak(u);
+    setTimeout(() => {
+      if (currentUtterance) { currentUtterance = null; resolve(true); }
+    }, Math.max(text.length * 120 / rate, 1500));
   });
 }
 
