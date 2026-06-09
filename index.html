@@ -630,7 +630,7 @@ async function speak(text, rate = 1) {
   for (let i = 0; i < parts.length; i++) {
     const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length);
     if (!ok) break;
-    if (i < parts.length - 1) await new Promise(r => setTimeout(r, 80));
+    if (i < parts.length - 1) await new Promise(r => setTimeout(r, 200));
   }
   statusBar.textContent = `✅ "${text}"`;
 }
