@@ -660,7 +660,7 @@ function speakOne(text, rate, vol, voice, idx, total) {
 
 async function speakOnline(text, rate = 1) {
   if (proxyAvailable !== false && (proxyAvailable || Date.now() > proxyRetryAt)) {
-    const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text.slice(0, 180))}`, rate);
+    const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text)}`, rate);
     if (r) { proxyAvailable = true; return; }
     proxyAvailable = false;
     proxyRetryAt = Date.now() + 120000;
