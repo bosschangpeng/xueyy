@@ -529,6 +529,7 @@ let currentUtterance = null;
 let currentAudioCtx = null;
 let currentAudioSrc = null;
 let proxyAvailable = null;
+let proxyRetryAt = 0;
 
 const SPEECH_PROXY = '/tts';
 
@@ -569,7 +570,7 @@ function populateVoiceList() {
     const opt = document.createElement('option');
     opt.value = v.uri || v.name;
     opt.textContent = label;
-    if (v.uri === selectedVoiceURI || v.name === selectedVoiceURI) opt.selected = true;
+    if (opt.value === prev || v.uri === selectedVoiceURI || v.name === selectedVoiceURI) opt.selected = true;
     voiceSelect.appendChild(opt);
   }
 }
@@ -649,7 +650,7 @@ function speakOne(text, rate, vol, voice, idx, total) {
     currentUtterance = u;
     statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
     u.onend = () => { currentUtterance = null; resolve(true); };
-    u.onerror = () => { currentUtterance = null; resolve(false); };
+    u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); resolve(false); };
     window.speechSynthesis.speak(u);
     setTimeout(() => {
       if (currentUtterance) { currentUtterance = null; resolve(true); }
@@ -658,12 +659,13 @@ function speakOne(text, rate, vol, voice, idx, total) {
 }
 
 async function speakOnline(text, rate = 1) {
-  if (proxyAvailable !== false) {
-    const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text)}`, rate);
+  if (proxyAvailable !== false && (proxyAvailable || Date.now() > proxyRetryAt)) {
+    const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text.slice(0, 180))}`, rate);
     if (r) { proxyAvailable = true; return; }
     proxyAvailable = false;
+    proxyRetryAt = Date.now() + 120000;
   }
-  statusBar.textContent = '❌ 无粤语语音可用';
+  statusBar.textContent = 'ℹ️ 当前设备无粤语语音，且在线引擎不可用';
   if (isFileProtocol) showToast('运行: python3 -m http.server 8080');
 }
 
@@ -746,6 +748,8 @@ function showToast(msg) {
   toast._timer = setTimeout(() => toast.classList.remove('show'), 2000);
 }
 
+let renderTimer = null;
+let historyTimer = null;
 inputEl.addEventListener('input', () => {
   const len = [...inputEl.value].length;
   charCount.textContent = len;
@@ -754,16 +758,16 @@ inputEl.addEventListener('input', () => {
     currentSentences = [];
     return;
   }
-  renderSentences(inputEl.value);
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(() => renderSentences(inputEl.value), 200);
   saveHistory(inputEl.value);
 });
-
-let historyTimer = null;
 function saveHistory(text) {
   clearTimeout(historyTimer);
   historyTimer = setTimeout(() => {
     let hist = JSON.parse(localStorage.getItem('yueHistory') || '[]');
-    if (hist.length && hist[0].text === text) return;
+    if (hist.some(h => h.text === text && !h.translated)) return;
+    hist = hist.filter(h => h.text !== text || !h.translated);
     hist.unshift({ text, time: Date.now() });
     if (hist.length > 50) hist = hist.slice(0, 50);
     localStorage.setItem('yueHistory', JSON.stringify(hist));
@@ -907,8 +911,14 @@ function renderHistory() {
     div.className = 'history-item';
     const d = new Date(h.time);
     const timeStr = `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
-    const label = h.translated ? `📝 ${h.text}` : `📄 ${h.text}`;
-    div.innerHTML = `<span class="text" title="${h.text}">${label}</span><span class="time">${timeStr}</span>`;
+    const textSpan = document.createElement('span');
+    textSpan.className = 'text';
+    textSpan.textContent = (h.translated ? '📝 ' : '📄 ') + h.text;
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = timeStr;
+    div.appendChild(textSpan);
+    div.appendChild(timeSpan);
     div.addEventListener('click', () => {
       inputEl.value = h.translated || h.text;
       charCount.textContent = [...(h.translated || h.text)].length;
