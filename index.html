@@ -45,6 +45,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .shdr:active,.shdr.playing{background:var(--tile-active);color:#fff}
 .stiles{display:flex;flex-wrap:wrap;gap:4px;padding:4px 8px 8px}
 .segment{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--tile-bg);color:var(--tile-text);cursor:pointer;transition:all .12s;touch-action:manipulation;-webkit-user-select:none;user-select:none;border:1px solid transparent;word-break:keep-all;font-size:var(--seg-size,1.15rem)}
+.segment:hover{background:var(--tile-hover)}
+.segment:active,.segment.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active);transform:scale(.95)}
+.segment.word{font-weight:600;background:#e0eaf8;border-color:#b0c8e8}
+.segment.word:active,.segment.word.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active)}
+.segment.punct{cursor:default;color:var(--text-light);background:transparent;padding:6px 4px;border-color:transparent}
+.segment.space{cursor:default;background:transparent;min-width:10px;border-color:transparent}
 .placeholder-text{color:var(--text-light);font-size:.9rem;text-align:center;padding:24px 0}
 .status-bar{font-size:.8rem;color:var(--text-light);margin-top:8px;min-height:1.2em;transition:opacity .3s}
 .footer{display:flex;gap:8px;justify-content:center;padding:8px 0 20px}
@@ -613,9 +619,12 @@ async function speak(text, rate = 1) {
 
   let voice = resolveVoice();
   if (!voice) voice = await getCantoneseVoice();
+  const vol = parseFloat(volumeRange.value);
+  if (!voice && speechSynthesis.getVoices().length > 0) {
+    voice = speechSynthesis.getVoices()[0];
+  }
   if (!voice) return speakOnline(text, rate);
 
-  const vol = parseFloat(volumeRange.value);
   for (let i = 0; i < parts.length; i++) {
     const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length);
     if (!ok) break;
@@ -746,7 +755,7 @@ function splitSentences(text) {
   const sents = []; let cur = '';
   for (const ch of text) {
     cur += ch;
-    if (/[。！？\n\r]/.test(ch) && cur.trim().length > 1) { sents.push(cur.trim()); cur = ''; }
+    if (/[。！？.!?\n\r]/.test(ch) && cur.trim()) { sents.push(cur.trim()); cur = ''; }
   }
   if (cur.trim()) sents.push(cur.trim());
   return sents.length ? sents : [text];
