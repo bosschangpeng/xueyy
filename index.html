@@ -644,7 +644,7 @@ function speakOne(text, rate, vol, voice, idx, total) {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-HK';
     u.rate = Math.max(0.1, Math.min(10, rate));
-    u.volume = Math.min(1, vol);
+    u.volume = 1;
     u.voice = voice;
     currentUtterance = u;
     statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
