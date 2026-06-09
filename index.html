@@ -545,16 +545,18 @@ let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
 
 function populateVoiceList() {
   const voices = speechSynthesis.getVoices();
-  const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.startsWith('yue'));
+  const yueVoices = voices.filter(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue'));
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
-  if (!zhVoices.length) {
-    voiceSelect.innerHTML = '<option value="">无中文语音</option>';
+  if (!yueVoices.length) {
+    voiceSelect.innerHTML = '<option value="">未检测到粤语语音</option>';
     return;
   }
-  for (const v of zhVoices) {
-    const isYue = v.lang.startsWith('zh-HK') || v.lang.startsWith('yue');
-    const label = `${v.name} (${v.lang})${isYue ? ' 🎯粤' : ''}`;
+  for (const v of yueVoices) {
+    const name = v.name.toLowerCase();
+    const gender = name.includes('zira') || name.includes('male') ? '♂男' :
+                   name.includes('huihui') || name.includes('female') || name.includes('sin-ji') ? '♀女' : '';
+    const label = `${v.name}${gender ? ' · ' + gender : ''}`;
     const opt = document.createElement('option');
     opt.value = v.uri || v.name;
     opt.textContent = label;
