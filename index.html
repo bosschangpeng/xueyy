@@ -305,7 +305,6 @@ function segmentTextFallback(text) {
 let currentUtterance = null;
 let currentAudioCtx = null;
 let currentAudioSrc = null;
-let usingFallback = false;
 let proxyAvailable = null;
 
 const SPEECH_PROXY = '/tts';
@@ -325,62 +324,75 @@ if (isFileProtocol) {
 function getCantoneseVoice() {
   return new Promise(resolve => {
     let v = speechSynthesis.getVoices();
-    if (v.length) { resolve(findCantoneseVoice(v)); return; }
+    if (v.length) { resolve(pickCantonese(v)); return; }
     let resolved = false;
     const done = (voice) => { if (!resolved) { resolved = true; resolve(voice); } };
-    speechSynthesis.onvoiceschanged = () => done(findCantoneseVoice(speechSynthesis.getVoices()));
+    speechSynthesis.onvoiceschanged = () => done(pickCantonese(speechSynthesis.getVoices()));
     setTimeout(() => done(null), 3000);
   });
 }
-function findCantoneseVoice(voices) {
-  return voices.find(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue') || v.lang.startsWith('zh-TW')) || voices.find(v => v.lang.startsWith('zh')) || null;
+function pickCantonese(voices) {
+  return voices.find(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue')) || null;
+}
+
+// Split text into small readable chunks (Chrome cuts off ~200 chars)
+function chunkText(text) {
+  const chunks = [];
+  let cur = '';
+  for (const ch of text) {
+    if (/[。！？，、；：\n\r]/.test(ch) && cur.length > 5) {
+      cur += ch; chunks.push(cur); cur = '';
+    } else if (cur.length >= 60) {
+      chunks.push(cur); cur = ch;
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks.length ? chunks : [text];
 }
 
 async function speak(text, rate = 1) {
   if (!text) return;
   stopSpeak();
-  statusBar.textContent = `🔊 发音中: "${text}"`;
+  const parts = chunkText(text);
+  let idx = 0;
 
-  if ('speechSynthesis' in window) {
-    try {
-      const voice = await getCantoneseVoice();
-      if (voice || speechSynthesis.getVoices().length > 0) {
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'zh-HK';
-        u.rate = Math.max(0.1, Math.min(10, rate));
-        if (voice) u.voice = voice;
-        currentUtterance = u;
-        return new Promise(resolve => {
-          u.onend = () => { currentUtterance = null; statusBar.textContent = `✅ "${text}"`; resolve(); };
-          u.onerror = () => {
-            currentUtterance = null;
-            if (!usingFallback) { usingFallback = true; resolve(speakOnline(text, rate)); }
-            else resolve();
-          };
-          window.speechSynthesis.speak(u);
-          setTimeout(() => {
-            if (currentUtterance) {
-              usingFallback = true; window.speechSynthesis.cancel();
-              resolve(speakOnline(text, rate));
-            }
-          }, 4000);
-        });
+  if (!('speechSynthesis' in window)) return speakOnline(text, rate);
+
+  const voice = await getCantoneseVoice();
+  if (!voice) return speakOnline(text, rate);
+
+  return new Promise(resolve => {
+    function speakNext() {
+      if (idx >= parts.length) {
+        currentUtterance = null;
+        statusBar.textContent = `✅ "${text}"`;
+        resolve();
+        return;
       }
-    } catch (e) {}
-  }
-  return speakOnline(text, rate);
+      const u = new SpeechSynthesisUtterance(parts[idx]);
+      u.lang = 'zh-HK';
+      u.rate = Math.max(0.1, Math.min(10, rate));
+      u.voice = voice;
+      statusBar.textContent = `🔊 发音中 (${idx+1}/${parts.length}): "${parts[idx]}"`;
+      currentUtterance = u;
+      u.onend = () => { idx++; speakNext(); };
+      u.onerror = () => { idx++; speakNext(); };
+      window.speechSynthesis.speak(u);
+    }
+    speakNext();
+  });
 }
 
 async function speakOnline(text, rate = 1) {
   if (proxyAvailable !== false) {
-    const result = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text)}`, rate);
-    if (result) { proxyAvailable = true; return result; }
+    const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text)}`, rate);
+    if (r) { proxyAvailable = true; return; }
     proxyAvailable = false;
   }
-  statusBar.textContent = 'ℹ️ 当前设备无粤语语音，可部署到 Cloudflare Pages 启用在线引擎';
-  if (isFileProtocol) {
-    showToast('运行: python3 -m http.server 8080 然后访问 http://localhost:8080');
-  }
+  statusBar.textContent = '❌ 无粤语语音可用';
+  if (isFileProtocol) showToast('运行: python3 -m http.server 8080');
 }
 
 async function tryFetchAudio(url, rate) {
@@ -392,38 +404,27 @@ async function tryFetchAudio(url, rate) {
     if (ctx.state === 'suspended') await ctx.resume();
     const audio = await ctx.decodeAudioData(buf);
     const src = ctx.createBufferSource();
-    src.buffer = audio;
-    src.playbackRate.value = rate;
-    const gain = ctx.createGain();
-    gain.gain.value = 1;
-    src.connect(gain);
-    gain.connect(ctx.destination);
-    src.start(0);
-    currentAudioSrc = src;
-    return new Promise(resolve => {
-      src.onended = () => { currentAudioSrc = null; statusBar.textContent = '✅ 发音完成'; resolve(true); };
-    });
-  } catch (e) {
-    return null;
-  }
+    src.buffer = audio; src.playbackRate.value = rate;
+    const gain = ctx.createGain(); gain.gain.value = 1;
+    src.connect(gain); gain.connect(ctx.destination);
+    src.start(0); currentAudioSrc = src;
+    return new Promise(r => { src.onended = () => { currentAudioSrc = null; r(true); }; });
+  } catch (e) { return null; }
 }
 
 function stopSpeak() {
   if (currentUtterance) { window.speechSynthesis.cancel(); currentUtterance = null; }
   if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch(e) {} currentAudioSrc = null; }
-  usingFallback = false;
 }
 
 // Detect engine status
 (async function() {
   if ('speechSynthesis' in window) {
     const v = await getCantoneseVoice();
-    if (v && (v.lang.startsWith('zh-HK') || v.lang.startsWith('yue'))) {
-      statusBar.textContent = `✅ 粤语语音引擎: ${v.name}（离线可用）`;
-    } else if (v) {
-      statusBar.textContent = `ℹ️ 语音引擎: ${v.name}（非粤语）`;
+    if (v) {
+      statusBar.textContent = `✅ ${v.name}（粤语 · 离线可用）`;
     } else {
-      statusBar.textContent = 'ℹ️ 无粤语语音，部署至 Cloudflare Pages 可启用在线引擎';
+      statusBar.textContent = 'ℹ️ 无粤语语音，需部署 Cloudflare Worker 获得在线引擎';
     }
   } else {
     statusBar.textContent = 'ℹ️ 部署至 Cloudflare Pages 可启用在线引擎';
@@ -505,10 +506,8 @@ async function playSegment(index) {
   segEls.forEach(el => el.classList.remove('playing'));
   const el = segEls[index];
   if (el) el.classList.add('playing');
-  const rate = parseFloat(speedRange.value);
-  statusBar.textContent = `🔊 发音: "${seg.text}" (语速 ${rate.toFixed(1)}×)`;
   playingIndex = index;
-  await speak(seg.text, rate);
+  await speak(seg.text, parseFloat(speedRange.value));
 }
 
 translateBtn.addEventListener('click', () => {
