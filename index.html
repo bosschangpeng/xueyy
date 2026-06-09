@@ -617,6 +617,7 @@ async function speak(text, rate = 1) {
   if (!text) return;
   stopSpeak();
   const parts = chunkText(text);
+  statusBar.textContent = `🔊 ${parts.length}段: ${parts.join(' | ')}`;
   if (!('speechSynthesis' in window)) return speakOnline(text, rate);
 
   let voice = await resolveVoice();
