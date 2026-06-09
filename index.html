@@ -580,8 +580,8 @@ voiceSelect.addEventListener('change', () => {
   localStorage.setItem('yueVoiceURI', selectedVoiceURI);
 });
 
-function resolveVoice() {
-  if (!selectedVoiceURI) return getCantoneseVoice();
+async function resolveVoice() {
+  if (!selectedVoiceURI) return await getCantoneseVoice();
   const voices = speechSynthesis.getVoices();
   return voices.find(v => v.uri === selectedVoiceURI || v.name === selectedVoiceURI) || null;
 }
@@ -617,7 +617,7 @@ async function speak(text, rate = 1) {
   const parts = chunkText(text);
   if (!('speechSynthesis' in window)) return speakOnline(text, rate);
 
-  let voice = resolveVoice();
+  let voice = await resolveVoice();
   if (!voice) voice = await getCantoneseVoice();
   const vol = parseFloat(volumeRange.value);
   if (!voice && speechSynthesis.getVoices().length > 0) {
@@ -634,7 +634,6 @@ async function speak(text, rate = 1) {
 
 function speakOne(text, rate, vol, voice, idx, total) {
   return new Promise(resolve => {
-    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-HK';
     u.rate = Math.max(0.1, Math.min(10, rate));
