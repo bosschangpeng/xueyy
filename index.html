@@ -31,17 +31,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .speed-control{display:flex;align-items:center;gap:8px;margin-left:auto;font-size:.85rem}
 .speed-control input[type=range]{width:100px;accent-color:var(--primary);height:4px;cursor:pointer}
 .speed-control .speed-label{min-width:48px;text-align:center;font-weight:600;color:var(--primary)}
+.controls-row{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:8px;font-size:.8rem}
+.controls-row label{display:flex;align-items:center;gap:4px;white-space:nowrap}
+.controls-row select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:.8rem;background:var(--card);max-width:170px;color:var(--text)}
+.range-wrap{display:flex;align-items:center;gap:4px}
+.range-wrap input[type=range]{width:64px;height:4px;accent-color:var(--primary)}
+.range-wrap .rv{min-width:28px;text-align:center;font-weight:600;color:var(--primary);font-size:.78rem}
 .segments-wrapper{min-height:60px}
-.segments{display:flex;flex-wrap:wrap;gap:6px;padding:8px 0;line-height:1}
-.segment{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--tile-bg);color:var(--tile-text);font-size:1.15rem;cursor:pointer;transition:all .12s;touch-action:manipulation;-webkit-user-select:none;user-select:none;border:1px solid transparent;word-break:keep-all}
-.segment:hover{background:var(--tile-hover)}
-.segment:active,.segment.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active);transform:scale(.95)}
-.segment.word{font-weight:600;background:#e0eaf8;border-color:#b0c8e8}
-.segment.word:active,.segment.word.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active)}
-.segment.punct{font-size:.9rem;color:var(--text-light);cursor:default;background:transparent;padding:6px 4px}
-.segment.punct:active,.segment.punct.playing{background:transparent;color:var(--text-light);transform:none}
-.segment.space{min-width:8px;cursor:default;background:transparent;padding:6px 2px}
-.segment.space:active,.segment.space.playing{background:transparent;transform:none}
+.segments{display:flex;flex-wrap:wrap;gap:6px;padding:8px 0;line-height:1;font-size:var(--seg-size,1.15rem)}
+.segment{display:inline-block;padding:6px 10px;border-radius:6px;background:var(--tile-bg);color:var(--tile-text);cursor:pointer;transition:all .12s;touch-action:manipulation;-webkit-user-select:none;user-select:none;border:1px solid transparent;word-break:keep-all}
 .placeholder-text{color:var(--text-light);font-size:.9rem;text-align:center;padding:24px 0}
 .status-bar{font-size:.8rem;color:var(--text-light);margin-top:8px;min-height:1.2em;transition:opacity .3s}
 .footer{display:flex;gap:8px;justify-content:center;padding:8px 0 20px}
@@ -61,7 +59,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .modal-header .btn-close{background:none;border:none;font-size:1.5rem;cursor:pointer;padding:0 4px;color:var(--text-light);line-height:1}
 .modal-body{padding:16px;overflow-y:auto;max-height:calc(80vh - 60px)}
 .modal-footer{padding:12px 16px;border-top:1px solid var(--border);text-align:right}
-@media(max-width:480px){.container{padding:8px}.card{padding:12px}.header h1{font-size:1.25rem}.segment{font-size:1rem;padding:5px 8px}.toolbar{gap:6px}.btn{padding:8px 12px;font-size:.85rem}.speed-control input[type=range]{width:80px}}
+@media(max-width:480px){.container{padding:8px}.card{padding:12px}.header h1{font-size:1.25rem}.segment{font-size:1rem;padding:5px 8px}.toolbar{gap:6px}.btn{padding:8px 10px;font-size:.82rem}.speed-control input[type=range]{width:68px}.controls-row{gap:4px 8px;font-size:.75rem}.controls-row select{max-width:130px;font-size:.75rem}.range-wrap input[type=range]{width:48px}}
 </style>
 </head>
 <body>
@@ -82,6 +80,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
         <input type="range" id="speedRange" min="0.25" max="2.0" step="0.05" value="1.0">
         <span class="speed-label" id="speedLabel">1.0×</span>
       </div>
+    </div>
+    <div class="controls-row">
+      <label>🎤 <select id="voiceSelect"><option value="">加载中...</option></select></label>
+      <label>🔊 <div class="range-wrap">
+        <input type="range" id="volumeRange" min="0" max="2.0" step="0.05" value="1.0">
+        <span class="rv" id="volumeLabel">1.0</span>
+      </div></label>
+      <label>🔤 <div class="range-wrap">
+        <input type="range" id="fontRange" min="0.5" max="2.0" step="0.05" value="1.0">
+        <span class="rv" id="fontLabel">1.0</span>
+      </div></label>
     </div>
   </div>
   <div class="card">
@@ -272,7 +281,207 @@ const segWords = new Set();
     '转折 庄稼 庄严 装备 装饰 状况 状态 准备 准确 准时 着手 着手 着手 着重 资源 ' +
     '仔细 自动 自觉 自然 自身 自我 自信 自由 自愿 自主 宗教 综合 总结 总理 总统 ' +
     '走向 阻挡 组成 组合 组织 祖国 祖先 钻研 最大 最低 最高 最后 最近 最为 最小 ' +
-    '最终 尊敬 尊重 遵守 遵循 昨天 左右 作家 作品 作为 作业 作用 作者 座谈 座位');
+    '最终 尊敬 尊重 遵守 遵循 昨天 左右 作家 作品 作为 作业 作用 作者 座谈 座位 ' +
+    '爱情 爱人 安静 安排 岸上 按照 八个 八月 半年 半夜 帮忙 包子 包括 保安 保护 ' +
+    '保证 报名 报社 暴露 爆炸 悲剧 悲伤 背后 背景 奔跑 本报 本文 本质 彼此 比例 ' +
+    '笔直 毕竟 闭塞 避免 边沿 边缘 编辑 鞭策 变革 变迁 便于 遍布 辨认 辩护 标榜 ' +
+    '标记 标明 标志 标准 表达 表格 表决 表面 表明 表情 表示 表演 表扬 别的 别人 ' +
+    '宾馆 拨款 波动 波浪 波涛 薄弱 补偿 补充 补贴 补助 部门 部署 不然 不足 部队 ' +
+    '材料 财物 裁剪 采集 采纳 采用 彩色 彩票 参观 参加 参军 参考 参谋 参赛 参与 ' +
+    '参照 残酷 惨重 灿烂 仓促 仓库 操场 操心 草案 测定 测量 测验 策略 曾经 层次 ' +
+    '差距 差异 查处 拆除 拆开 产量 产品 产生 产物 产业 阐述 颤抖 猖狂 长跑 长期 ' +
+    '长沙 长途 长远 长征 场合 场面 场所 倡导 倡议 唱歌 抄送 超越 车间 车辆 车厢 ' +
+    '彻底 沉默 沉没 沉睡 沉思 沉重 沉着 陈旧 陈列 衬托 称号 称呼 称赞 撑腰 成败 ' +
+    '成分 成功 成果 成绩 成就 成立 成为 成长 诚恳 诚实 诚心 承包 承担 承认 承受 ' +
+    '澄清 吃饭 吃亏 吃力 迟缓 迟早 翅膀 充当 充分 充满 充实 充足 冲动 冲击 冲破 ' +
+    '崇敬 崇高 抽象 仇恨 筹备 臭美 出版 出差 出发 出口 出来 出路 出卖 出去 出入 ' +
+    '出色 出身 出生 出世 出售 出席 出现 出游 初步 初级 初期 出众 除了 储备 储存 ' +
+    '储蓄 处分 处境 处理 处于 储备 传递 传送 传统 窗户 窗帘 床单 创立 创新 创业 ' +
+    '创造 创作 垂直 纯洁 词语 词组 辞典 辞退 此刻 此时 次数 匆忙 聪明 从此 从而 ' +
+    '匆忙 聪明 从此 从来 从前 从容 从事 粗暴 粗糙 促进 促使 篡改 催促 催化 脆弱 ' +
+    '打击 打破 打扫 打算 打听 打印 打仗 打针 大胆 大多 大方 大概 大家 大局 大力 ' +
+    '大量 大陆 大米 大批 大桥 大人 大使 大小 大型 大意 大致 大众 带领 带头 带来 ' +
+    '代替 代谢 担忧 单纯 单调 单独 单位 单元 耽搁 耽误 胆量 胆小 但是 诞生 淡薄 ' +
+    '当场 当初 当代 当地 当今 当年 当前 当然 当时 当中 档案 档次 导弹 导演 导致 ' +
+    '盗窃 道歉 得意 得到 登记 等待 等候 等于 低劣 低落 低下 抵抗 抵制 地步 地带 ' +
+    '地点 地方 地理 地面 地球 地区 地图 地位 地下 地址 地质 颠倒 典礼 典型 点缀 ' +
+    '电报 电话 电脑 电器 电视 电台 电影 电源 电子 调查 调动 东北 东方 东京 东南 ' +
+    '冬天 冬季 动力 动脉 动态 动物 动员 动作 冻结 都市 斗争 督促 毒害 独立 独特 ' +
+    '读者 堵塞 端正 短期 短暂 断定 断绝 对比 对待 对方 对付 对话 对抗 对面 对手 ' +
+    '对象 对应 对于 对照 顿时 多半 多次 多么 多少 多余 多种 夺得 夺取 俄语 额头 ' +
+    '恶意 儿科 儿子 而后 而且 而是 而已 儿女 儿童 耳朵 二月 发表 发布 发送 发达 ' +
+    '发呆 发动 发放 发稿 发光 发挥 发明 发票 发起 发热 发射 发生 发现 发行 发言 ' +
+    '发扬 发展 罚款 法律 法院 翻译 翻身 烦恼 繁忙 繁荣 繁杂 凡是 反驳 反复 反馈 ' +
+    '反抗 反映 反正 范围 犯罪 饭店 泛滥 方便 方法 方面 方式 方向 方针 防守 防线 ' +
+    '防止 妨碍 放假 放下 放心 飞驰 飞机 飞快 飞翔 飞行 飞跃 非常 非法 肥料 匪徒 ' +
+    '肺部 废除 废话 废物 费用 分别 分工 分开 分类 分配 分批 分散 分析 分钟 分子 ' +
+    '吩咐 坟墓 粉碎 奋斗 愤怒 丰满 丰富 丰收 封闭 封闭 封建 封锁 疯狂 风雨 否定 ' +
+    '否决 否认 否则 夫妇 夫妻 扶持 服从 服务 服装 符号 符合 幅度 福利 抚摸 抚养 ' +
+    '辅导 辅助 腐败 腐朽 父亲 付出 付款 付清 负担 负责 妇联 附和 附件 附近 附录 ' +
+    '附属 复查 复合 复活 复习 复兴 复杂 复制 付出 富裕 改变 改革 改进 改良 改善 ' +
+    '改造 改正 改组 盖子 概括 概念 概述 干脆 干净 干扰 干涉 干燥 赶快 感动 感激 ' +
+    '感觉 感慨 感冒 感情 感受 感染 感叹 感谢 感应 敢于 干部 干活 刚好 刚毅 岗位 ' +
+    '钢笔 港澳 港口 高昂 高产 高超 高潮 高大 高等 高峰 高级 高尚 高速 高兴 高效 ' +
+    '高原 高涨 高中 搞好 告别 告辞 告诉 歌唱 歌曲 歌颂 革命 格调 格局 格式 格外 ' +
+    '隔离 个别 个人 个体 个性 各个 各国 各级 各类 各位 各种 给出 给以 根本 根据 ' +
+    '跟随 跟踪 更加 更新 耕地 耕种 工人 工业 工艺 工资 工作 攻击 功劳 功能 供不应求 ' +
+    '供给 供养 供应 巩固 贡献 共同 沟通 构成 构思 构造 购买 购物 估计 孤单 孤立 ' +
+    '古板 古代 古典 古老 古人 骨干 股东 股份 股票 鼓励 鼓舞 鼓掌 固定 固然 固体 ' +
+    '故乡 故意 顾客 顾虑 雇佣 雇员 瓜分 挂念 拐弯 关闭 关怀 关键 关门 关系 关心 ' +
+    '关于 关注 观测 观察 观点 观看 观念 观众 管理 管辖 贯彻 光彩 光泽 广场 广大 ' +
+    '广泛 广告 广阔 广义 广州 规划 规矩 规律 规模 规则 规章 轨道 贵州 滚动 锅炉 ' +
+    '国防 国籍 国际 国家 国内 国情 国土 国外 国王 国营 果断 过度 过分 过去 过问 ' +
+    '过于 孩子 还是 还有 海洋 害怕 害羞 含量 含义 寒冷 罕见 喊叫 汉语 汉字 汉族 ' +
+    '航海 航空 航天 航行 行业 豪华 好吃 好处 好多 好感 好看 好说 好听 好玩 好像 ' +
+    '好些 好心 好意 号码 号召 核对 核心 黑暗 黑色 痕迹 很大 很多 很少 狠毒 狠心 ' +
+    '衡量 轰炸 红色 洪水 喉咙 后代 后果 后来 后门 后面 后退 呼吸 忽略 忽视 忽然 ' +
+    '互相 互助 花瓣 花园 华北 华东 华丽 华南 华侨 滑冰 滑雪 化工 化学 化验 划分 ' +
+    '画报 画家 画面 画图 怀念 怀疑 欢呼 欢乐 欢送 欢迎 环节 环境 缓和 缓慢 幻想 ' +
+    '换取 黄色 皇帝 皇后 辉煌 灰尘 灰色 恢复 回答 回顾 回来 回收 回头 回忆 悔恨 ' +
+    '毁灭 汇报 汇合 贿赂 毁灭 婚姻 活动 活泼 活跃 火柴 火车 火箭 火力 火焰 伙伴 ' +
+    '或许 或者 饥饿 机构 机会 机能 机器 机体 机械 机智 肌肉 积累 积压 基本 基层 ' +
+    '基础 基地 基金 几乎 机场 机车 机床 机动 机构 机关 机会 机率 机能 机器 机体 ' +
+    '机械 机遇 机制 肌肉 鸡蛋 迹象 积累 积压 基本 基层 基础 基金 几乎 激烈 激光 ' +
+    '激动 及时 及格 吉祥 级别 极度 极端 极力 极其 极为 即将 即刻 即使 即位 即兴 ' +
+    '急忙 急诊 集合 集会 集体 集团 集中 几个 计划 计较 计数 计算 记号 记录 记忆 ' +
+    '记载 纪要 技工 技能 技术 技艺 季节 季度 季刊 剂量 继承 继续 寄托 寂静 寂寞 ' +
+    '加班 加工 加强 加入 加速 加深 加以 加重 家乡 家长 价格 价钱 价值 驾驶 架设 ' +
+    '架子 嫁妆 歼灭 监察 监督 监管 监视 监狱 坚持 坚定 坚固 坚决 坚强 坚毅 尖端 ' +
+    '坚持 艰巨 艰苦 艰难 监督 监视 监狱 兼职 检点 检查 检察 检讨 检修 检验 渐渐 ' +
+    '间接 建立 建设 建设 建议 建造 建筑 健康 健美 健全 健身 健壮 渐渐 鉴定 键盘 ' +
+    '将近 将军 将来 讲述 奖励 奖品 奖赏 降低 降落 降水 降温 骄傲 焦点 焦急 角度 ' +
+    '角色 角落 揭示 阶段 阶级 接班 接触 接待 接近 接收 接受 揭露 揭示 街道 节俭 ' +
+    '节目 节目 节目 节能 节目 节目 节目 节能 节目 节省 节约 节奏 杰出 洁白 结构 ' +
+    '结果 结合 结婚 结晶 结局 结论 结束 结算 结账 竭力 解释 解脱 介绍 界限 借助 ' +
+    '金牌 金融 金钱 金属 今后 今年 今日 今天 紧张 尽力 尽管 尽快 尽量 进步 进程 ' +
+    '进攻 进化 进军 进口 进入 进行 进展 禁止 经典 经费 经过 经济 经理 经历 经受 ' +
+    '经验 经营 惊人 惊讶 精彩 精华 精简 精力 精美 精密 精确 精神 精细 精心 精致 ' +
+    '警告 警惕 警察 警告 竞赛 竞争 竟然 敬爱 敬礼 纠纷 纠正 九月 居住 局部 局面 ' +
+    '局限 举办 举行 巨大 拒绝 具备 具体 具有 剧本 剧烈 距离 聚集 捐款 捐献 捐赠 ' +
+    '决议 角色 角逐 觉悟 觉醒 绝对 军队 军民 军事 军医 均匀 竣工 卡车 开办 开辟 ' +
+    '开设 开始 开头 开心 开展 开支 刊物 考察 考古 考核 考虑 考试 考验 拷贝 靠近 ' +
+    '科目 科学 科研 科长 可爱 可恨 可靠 可能 可是 可惜 可笑 可行 可以 刻苦 课本 ' +
+    '肯定 恳切 空白 空地 空气 空前 空中 控制 口头 苦难 库存 夸奖 夸张 快速 快乐 ' +
+    '快慢 快速 宽敞 宽广 宽阔 宽松 款式 矿产 蓝色 篮球 懒惰 朗读 牢固 浪费 浪漫 ' +
+    '劳动 劳务 老年 老师 老实 老是 乐观 雷达 类似 类型 冷淡 冷静 冷却 离开 离休 ' +
+    '理解 理论 理事 理想 理性 理由 力量 力气 历史 利益 利用 例如 例外 联合 联络 ' +
+    '联系 联想 脸色 练习 良好 粮食 谅解 辽阔 了解 列车 烈士 林业 临时 灵活 灵敏 ' +
+    '凌晨 零件 零售 领导 领土 领袖 领域 另外 浏览 留恋 流水 流行 六月 隆重 垄断 ' +
+    '楼房 录取 录制 陆地 陆军 陆续 旅客 旅行 旅游 律师 绿色 掠夺 轮船 论述 论文 ' +
+    '论证 逻辑 落后 马路 骂声 埋伏 买卖 埋怨 满怀 满腔 满意 满足 盲从 盲目 忙碌 ' +
+    '茫然 毛笔 矛盾 冒险 贸易 没有 煤炭 美观 美好 美化 美丽 美满 美妙 美术 萌芽 ' +
+    '猛烈 梦想 迷惑 迷恋 迷失 迷信 密度 密封 密集 密码 密切 棉花 免除 免费 免税 ' +
+    '免疫 面对 面积 面临 面貌 面目 面前 描绘 描述 描写 秒针 灭火 灭亡 民兵 民航 ' +
+    '民间 民事 民意 民用 民主 民族 敏感 敏捷 敏锐 明白 明亮 明年 明确 明显 明天 ' +
+    '明显 铭刻 命令 命运 摸索 模范 模糊 模具 模型 摩托车 陌生 墨水 默默 某种 母亲 ' +
+    '目前 目光 拿下 哪里 哪怕 哪个 哪里 哪怕 那样 哪些 那是 那种 耐心 男女 男人 ' +
+    '南方 南海 南京 南面 难受 难题 难忘 内心 内在 能力 能量 能源 拟定 年级 年度 ' +
+    '年青 年轻 年终 念书 鸟瞰 捏造 您 牛奶 扭转 农村 农民 农业 浓厚 弄虚 奴隶 努力 ' +
+    '暖和 诺言 欧洲 偶然 偶数 呕吐 爬行 排斥 排除 排列 徘徊 派遣 攀登 判断 判决 ' +
+    '盼望 庞大 泡沫 培训 培养 培育 赔偿 陪同 佩服 配合 配套 配制 喷气 盆地 烹饪 ' +
+    '朋友 膨胀 批判 批评 批准 脾气 皮肤 疲倦 疲劳 屁股 片断 片刻 片面 飘扬 飘摇 ' +
+    '拼搏 拼命 贫困 贫穷 频繁 频率 品尝 品德 品质 品种 平安 平常 平淡 平等 平凡 ' +
+    '平分 平衡 平滑 平静 平均 平面 平坦 平稳 平息 平原 平整 评比 评价 评论 评审 ' +
+    '评选 苹果 凭据 凭空 凭借 屏幕 破坏 迫害 迫切 朴实 普通 普通话 瀑布 期待 期间 ' +
+    '期刊 期望 期限 欺骗 七月 妻子 其次 其实 其他 其中 奇怪 奇迹 崎岖 旗帜 启发 ' +
+    '启示 启用 起程 起床 起来 起立 起码 起色 起源 气喘 气氛 气候 气流 气体 气味 ' +
+    '气温 气象 汽车 汽油 洽谈 恰当 恰好 恰巧 谦虚 签字 前程 前进 前景 前列 前面 ' +
+    '前年 前提 前天 前往 前线 前夕 前头 潜力 潜在 谴责 强大 强调 强烈 强迫 强制 ' +
+    '强壮 抢夺 抢救 桥梁 巧妙 切断 切实 亲爱 亲切 亲热 亲人 亲身 亲手 亲眼 亲友 ' +
+    '亲自 侵略 青年 青山 轻松 轻便 轻快 轻声 轻视 轻松 轻微 轻易 倾向 倾销 清白 ' +
+    '清楚 清洁 清理 清晰 清醒 情报 情节 情景 情况 情形 情绪 晴朗 请假 请教 请客 ' +
+    '请求 请示 庆祝 穷苦 秋季 秋天 求得 屈服 趋势 渠道 取得 取消 去年 去世 权利 ' +
+    '权力 全面 全部 全程 全力 全面 全体 劝告 缺点 缺乏 缺少 缺陷 确保 确定 确认 ' +
+    '确实 确信 群体 群众 然而 然后 燃料 燃烧 热爱 热烈 热潮 热带 热忱 热心 人才 ' +
+    '人格 人工 人口 人类 人民 人情 人权 人群 人生 人物 人性 人员 人造 忍耐 忍受 ' +
+    '认定 认可 认为 认真 任何 任命 任务 任性 任意 仍旧 仍然 日常 日程 日光 日记 ' +
+    '日期 日夜 日常 日程 日历 日用品 日子 荣幸 荣誉 容量 容纳 容忍 容许 容易 熔化 ' +
+    '柔和 柔软 如此 如果 如何 如今 如同 入场 入党 软件 若干 弱点 三月 散步 散发 ' +
+    '丧失 沙漠 沙滩 筛选 山村 山地 山峰 山谷 河流 山路 山脉 山区 山庄 闪电 闪烁 ' +
+    '善良 善于 伤害 伤痕 伤口 伤心 伤亡 商场 商店 商量 商品 商人 商业 上班 上场 ' +
+    '上当 上海 上级 上课 上升 上市 社 社区 设有 涉及 社会 社科 社区 涉及 社团 射击 ' +
+    '摄影 申诉 身份 深厚 深化 深刻 深浅 深切 深情 深入 深信 深夜 深远 深圳 什么 ' +
+    '审查 审判 审批 慎重 生产 生存 生动 生活 生机 生理 生命 生气 生日 生物 生育 ' +
+    '生长 声音 牲畜 胜利 师范 师傅 师长 诗歌 施工 施加 施行 湿润 十足 石头 石油 ' +
+    '时代 时候 时间 时刻 时期 识别 识别 实际 实践 实力 实现 实行 实验 实用 实在 ' +
+    '识别 食品 食堂 食物 食用 使命 使用 世纪 世界 市场 市民 市区 事情 事实 事物 ' +
+    '事先 事业 视觉 视力 视线 视野 是否 适当 适合 适宜 适应 收藏 收获 收集 收入 ' +
+    '收拾 收音机 手法 手工 手机 手术 手套 手续 手指 守护 守卫 首次 首都 首届 首领 ' +
+    '首先 首席 首相 寿星 受到 受害 受苦 受益 受伤 授予 书法 书籍 书记 书本 书写 ' +
+    '熟悉 属于 树立 树木 数据 数量 数目 数学 数字  numeral 双 双方 双重 水利 水平 ' +
+    '睡觉 睡眠 顺利 顺序 瞬间 说话 说明 思考 思念 思索 思维 思想 司法 司机 丝毫 ' +
+    '四处 四川 四方 四季 四 四周 四周 似乎 松懈 送行 搜集 搜索 苏联 速度 速率 宿舍 ' +
+    '塑料 塑造 虽然 随便 随后 随后 随手 随意 随着 岁月 损害 损耗 损坏 损失 缩短 ' +
+    '缩小 所以 所有 所谓 所长 索赔 索引 他们 它们 她们 它们 踏实 台北 台湾 太阳 ' +
+    '态度 泰山 贪婪 贪污 谈论 谈判 坦然 坦率 探索 探讨 倘若 淘汰 讨论 特别 特点 ' +
+    '特定 特点 特级 特区 特色 特殊 特务 特性 特意 特征 疼痛 提拔 提倡 提出 提高 ' +
+    '提供 提交 提炼 提前 提取 提醒 提议 题材 体积 体力 体谅 体现 体验 体育 体制 ' +
+    '体质 体重 天才 天空 天气 天然 天使 天真 填补 填写 田野 条约 调节 调整 挑衅 ' +
+    '跳动 铁路 听见 听众 停顿 停止 通常 通过 通俗 通信 通讯 通用 通知 同胞 同事 ' +
+    '同学 同样 同意 同志 统一 统治 痛苦 痛快 投入 投资 透露 透明 突出 突击 突破 ' +
+    '突然 图案 图画 图片 图书 图像 图形 图 图纸 途径 土地 团结 团体 推测 推动 推广 ' +
+    '推进 推行 推广 推荐 推进 退步 退休 退出 退还 退伍 托管 脱离 脱落 妥当 妥善 ' +
+    '挖掘 瓦解 歪曲 外表 外部 外层 外国 外行 外汇 外交 外界 外贸 外面 外头 外交 ' +
+    '外语 弯曲 完毕 完成 完美 完全 完善 完整 玩具 顽固 顽强 挽救 晚报 晚会 晚上 ' +
+    '万一 网络 往来 忘记 危害 危机 危险 威风 威力 威望 威胁 威信 微笑 微型 违反 ' +
+    '围攻 围绕 唯一 维持 维护 维修 伟大 委屈 委托 委员 卫生 卫星 未婚 未来 位置 ' +
+    '慰问 温和 温暖 温柔 文化 文件 文明 文物 文献 文学 文艺 文章 文字 稳定 问候 ' +
+    '问题 稳住 我国 我们 污染 无比 无法 无非 无论 无情 无穷 无数 无限 无效 无意 ' +
+    '武器 武术 武装 侮辱 舞蹈 舞会 舞台 物理 物质 物资 误解 误会 误解 物体 误差 ' +
+    '牺牲 吸取 吸收 吸引 希望 习惯 喜爱 喜欢 喜讯 喜悦 戏剧 戏曲 系统 细腻 细菌 ' +
+    '细致 下班 下跌 下放 下级 下降 下列 下面 下午 下乡 下游 下来 下去 夏天 掀起 ' +
+    '先进 先锋 先后 先进 先辈 先烈 先前 先生 鲜明 鲜艳 显得 显露 显然 显示 显现 ' +
+    '显著 险恶 现场 观点 现代 现金 现实 现象 现在 限度 限制 线路 宪法 陷害 陷入 ' +
+    '羡慕 献身 乡村 乡亲 相称 相当 相等 相对 相反 相关 相互 相继 相交 相似 相同 ' +
+    '相信 相应 相识 详细 响亮 响声 响应 想法 想念 想象 想像 向来 向往 项目 象征 ' +
+    '消费 消耗 消灭 消失 销毁 销路 销售 潇洒 小孩 小姐 小时 小说 小心 小型 小学 ' +
+    '小组 效果 效率 效益 校长 校园 协调 协商 协议 协助 协作 写作 泄密 泄露 谢绝 ' +
+    '谢谢 心病 心理 心灵 心情 心脏 辛苦 辛勤 欣赏 新年 新郎 新娘 新闻 新鲜 新兴 ' +
+    '新型 新颖 信 信封 信号 信件 信念 信任 信息 信心 信仰 信用 信誉 兴办 兴奋 ' +
+    '兴趣 星期 形成 形容 形式 形势 形象 形状 行动 行进 行李 行驶 行为 行政 形成 ' +
+    '幸福 幸运 性别 性格 性命 性能 姓 兄弟 胸怀 胸口 雄厚 雄伟 修复 修改 修建 ' +
+    '修理 修养 修正 羞愧 秀丽 需要 需求 须要 许多 许可 叙述 序列 宣布 宣传 宣告 ' +
+    '宣言 宣言 宣扬 旋转 选拔 选举 选择 学科 学历 学生 学术 学说 学堂 学习 学校 ' +
+    '学员 学院 学者 询问 巡逻 循环 训练 迅速 压力 压迫 压制 押金 鸦片 牙齿 牙膏 ' +
+    '亚军 严格 严峻 严厉 严密 严肃 严重 言论 言语 岩石 炎热 研究 研制 盐酸 颜色 ' +
+    '掩盖 掩护 眼光 眼睛 眼镜 眼泪 演说 演绎 演员 演奏 验收 阳光 氧气 样式 样子 ' +
+    '要求 邀请 遥远 摇摆 摇晃 摇滚 摇曳 谣言 药材 药物 要求 钥匙 野蛮 业务 业余 ' +
+    '叶子 夜晚 一般 一半 一边 一旦 一定 一共 一会儿 一块 一起 一切 一生 一时 一同 ' +
+    '一下 一向 一样 一直 一致 衣服 衣 医疗 医生 医学 医药 医院 移植 疑问 已经 ' +
+    '以后 以及 以来 以前 以上 以外 以外 以往 以下 以至 以致 意见 意识 意思 意图 ' +
+    '意外 意味 意义 意愿 意志 因此 因而 因为 因子 阴天 阴影 音调 音乐 音 银 银行 ' +
+    '引 引起 引用 饮食 印刷 印象 英国 英雄 英勇 英语 应当 应付 应该 应用 隆重 ' +
+    '拥抱 拥护 拥挤 拥有 永不 永久 永远 勇敢 勇气 勇往 勇士 勇于 涌现 用处 用户 ' +
+    '用力 优势 优点 优美 优胜 优势 优先 优秀 优异 优越 忧郁 由于 犹如 犹豫 游览 ' +
+    '游乐 游戏 游泳 友爱 友好 友情 友谊 有趣 有时 有效 有些 有意 有用 有 友好 ' +
+    '右边 幼儿 幼稚 于是 娱乐 愉快 舆论 与会 与其 语法 语气 语言 语音 预报 预备 ' +
+    '预测 预防 预计 预料 预习 预先 预言 预约 预兆 原来 原理 原谅 原料 原因 原则 ' +
+    '圆满 原子 援助 源泉 远近 远景 远大 远方 远见 远程 远离 怨言 院长 院校 愿望 ' +
+    '愿意 约束 月份 月球 乐器 乐曲 阅读 阅历 跃进 云彩 云雾 允许 运动 运输 运送 ' +
+    '运算 运行 运用 运转 酝酿 蕴藏 灾区 灾难 栽培 栽种 再度 再生 再说 再现 在场 ' +
+    '在家 在于 在职 在座 咱们 暂时 赞成 赞美 赞赏 赞叹 赞扬 赞助 赃款 脏乱 遭受 ' +
+    '遭遇 早晨 早点 早期 早上 早已 造型 责任 增多 增加 增进 增强 增长 憎恨 赠送 ' +
+    '炸弹 诈骗 摘抄 摘要 债务 债权 占 展开 展览 展示 展望 展现 占领 占有 战斗 ' +
+    '战略 战胜 战士 战术 战线 战争 站 章程 长大 长辈 长江 长期 长途 长远 长征 ' +
+    '招生 招收 招手 找 召开 照常 照顾 照亮 照射 照相 照样 照耀 遮 折磨 哲学 ' +
+    '针对 侦探 珍贵 珍惜 真诚 真实 真是 真相 真正 诊断 阵地 振动 振奋 振兴 震动 ' +
+    '镇定 镇静 镇压 争夺 争论 争气 争取 征求 整顿 整个 整理 整齐 整体 正 正常 ' +
+    '正当 正规 正面 正确 正式 正义 正在 政策 政府 政权 政委 政协 政治 支撑 支持 ' +
+    '支出 支付 支配 支票 支援 知道 知识 知 执行 直接 直径 值得 职工 职能 职权 ' +
+    '职务 职业 职员 职责 植物 殖民地 指标 指导 指定 指挥 指令 指明 指示 指责 ' +
+    '志愿 治安 治理 治疗 制定 制度 制服 制品 制造 制止 制作 质量 秩序 智慧 智力 ' +
+    '智能 中等 中断 中国 中华 中级 中坚 中间 中年 中期 中途 中外 中文 中午 中心 ' +
+    '中性 中学 中旬 中央 中药 中医 中原 忠诚 忠实 终点 终端 终究 终年 终身 终于 ' +
+    '终止 钟表 种类 中毒 众多 重大 重点 重复 重庆 重视 重要 周年 周围 周转 诸位 ' +
+    '主持 主动 主观 主力 主流 主权 主人 主任 主题 主体 主席 主要 主张 住所 住宅 ' +
+    '注册 注目 注释 注视 注意 注重 祝福 祝贺 著称 著名 抓紧 专长 专家 专利 专门 ' +
+    '专题 专业 专心 专用 转变 转化 转让 转折 庄稼 庄严 装备 装饰 状况 状态 追查 ' +
+    '追悼 追赶 追究 追求 追溯 追寻 追逐 准则 琢磨 卓越 着手 着想 着重 咨询 姿势 ' +
+    '姿态 资本 资产 资格 资金 资源 资助 子女 仔细 自卑 自动 自发 自豪 自己 自觉 ' +
+    '自然 自身 自我 自信 自由 自愿 自主 自 综合 综合 总结 总理 总数 总之 总统 ' +
+    '走向 阻挡 阻挠 阻止 组成 组合 组长 组织 祖 祖国 祖先 钻研 最大 最低 最多 ' +
+    '最高 最好 最后 最近 最少 最小 最新 最终 昨天 左边 左右 坐标 座谈 座位 做 做法 ' +
+    '做饭 做客 做梦 做 做主 作为 作业 作用 作者 坐落 做事 做出 做成 做到');
   for (const w of extras.split(/\s+/)) {
     if (w && /[\u4e00-\u9fff]/.test(w)) segWords.add(w);
   }
@@ -321,6 +530,49 @@ if (isFileProtocol) {
   }, 100);
 }
 
+const voiceSelect = document.getElementById('voiceSelect');
+const volumeRange = document.getElementById('volumeRange');
+const volumeLabel = document.getElementById('volumeLabel');
+const fontRange = document.getElementById('fontRange');
+const fontLabel = document.getElementById('fontLabel');
+
+let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
+
+function populateVoiceList() {
+  const voices = speechSynthesis.getVoices();
+  const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.startsWith('yue'));
+  const prev = voiceSelect.value;
+  voiceSelect.innerHTML = '';
+  if (!zhVoices.length) {
+    voiceSelect.innerHTML = '<option value="">无中文语音</option>';
+    return;
+  }
+  for (const v of zhVoices) {
+    const isYue = v.lang.startsWith('zh-HK') || v.lang.startsWith('yue');
+    const label = `${v.name} (${v.lang})${isYue ? ' 🎯粤' : ''}`;
+    const opt = document.createElement('option');
+    opt.value = v.uri || v.name;
+    opt.textContent = label;
+    if (v.uri === selectedVoiceURI || v.name === selectedVoiceURI) opt.selected = true;
+    voiceSelect.appendChild(opt);
+  }
+}
+if ('speechSynthesis' in window) {
+  speechSynthesis.addEventListener('voiceschanged', populateVoiceList);
+  setTimeout(populateVoiceList, 500);
+}
+
+voiceSelect.addEventListener('change', () => {
+  selectedVoiceURI = voiceSelect.value;
+  localStorage.setItem('yueVoiceURI', selectedVoiceURI);
+});
+
+function resolveVoice() {
+  if (!selectedVoiceURI) return getCantoneseVoice();
+  const voices = speechSynthesis.getVoices();
+  return voices.find(v => v.uri === selectedVoiceURI || v.name === selectedVoiceURI) || null;
+}
+
 function getCantoneseVoice() {
   return new Promise(resolve => {
     let v = speechSynthesis.getVoices();
@@ -352,22 +604,25 @@ async function speak(text, rate = 1) {
   const parts = chunkText(text);
   if (!('speechSynthesis' in window)) return speakOnline(text, rate);
 
-  const voice = await getCantoneseVoice();
+  let voice = resolveVoice();
+  if (!voice) voice = await getCantoneseVoice();
   if (!voice) return speakOnline(text, rate);
 
+  const vol = parseFloat(volumeRange.value);
   for (let i = 0; i < parts.length; i++) {
-    const ok = await speakOne(parts[i], rate, voice, i, parts.length);
+    const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length);
     if (!ok) break;
   }
   statusBar.textContent = `✅ "${text}"`;
 }
 
-function speakOne(text, rate, voice, idx, total) {
+function speakOne(text, rate, vol, voice, idx, total) {
   return new Promise(resolve => {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-HK';
     u.rate = Math.max(0.1, Math.min(10, rate));
+    u.volume = Math.min(1, vol);
     u.voice = voice;
     currentUtterance = u;
     statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
@@ -400,7 +655,8 @@ async function tryFetchAudio(url, rate) {
     const audio = await ctx.decodeAudioData(buf);
     const src = ctx.createBufferSource();
     src.buffer = audio; src.playbackRate.value = rate;
-    const gain = ctx.createGain(); gain.gain.value = 1;
+    const vol = parseFloat(volumeRange.value);
+    const gain = ctx.createGain(); gain.gain.value = Math.max(0, vol);
     src.connect(gain); gain.connect(ctx.destination);
     src.start(0); currentAudioSrc = src;
     return new Promise(r => { src.onended = () => { currentAudioSrc = null; r(true); }; });
@@ -412,6 +668,18 @@ function stopSpeak() {
   if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch(e) {} currentAudioSrc = null; }
 }
 
+// Volume slider
+volumeRange.addEventListener('input', () => {
+  volumeLabel.textContent = parseFloat(volumeRange.value).toFixed(1);
+});
+
+// Font size slider
+fontRange.addEventListener('input', () => {
+  const v = parseFloat(fontRange.value).toFixed(1);
+  fontLabel.textContent = v;
+  document.documentElement.style.setProperty('--seg-size', (1.15 * v) + 'rem');
+});
+
 // Detect engine status
 (async function() {
   if ('speechSynthesis' in window) {
@@ -419,12 +687,11 @@ function stopSpeak() {
     if (v) {
       statusBar.textContent = `✅ ${v.name}（粤语 · 离线可用）`;
     } else {
-      statusBar.textContent = 'ℹ️ 无粤语语音，需部署 Cloudflare Worker 获得在线引擎';
+      statusBar.textContent = 'ℹ️ 无粤语语音，可部署 Cloudflare Worker';
     }
   } else {
     statusBar.textContent = 'ℹ️ 部署至 Cloudflare Pages 可启用在线引擎';
   }
-  // Detect if proxy is available
   try {
     const r = await fetch(`${SPEECH_PROXY}?text=test`, { method: 'HEAD' });
     if (r.ok) proxyAvailable = true;
