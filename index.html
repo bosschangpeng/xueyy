@@ -210,7 +210,12 @@ function toCantonese(text) {
 
 function segmentText(text) {
   if (!text.trim()) return [];
-  return mergeSegments(segmentTextFallback(text));
+  const result = mergeSegments(segmentTextFallback(text));
+  const wordCount = result.filter(s => s.type === 'word').length;
+  const charCount = result.filter(s => s.type === 'char').length;
+  window._segDebug = `词${wordCount}字${charCount} 段${result.length}`;
+  console.log('[seg]', text, '→', result.map(s => s.text + ':' + s.type).join('|'));
+  return result;
 }
 
 // Post-process: merge consecutive single chars if they form a known word
