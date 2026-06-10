@@ -735,7 +735,7 @@ async function speakOnline(text, rate = 1) {
 
 async function tryFetchAudio(url, rate) {
   try {
-    const resp = await fetch(url, { referrerPolicy: 'unsafe-url' });
+    const resp = await fetch(url);
     if (!resp.ok) return null;
     const buf = await resp.arrayBuffer();
     const ctx = getAudioCtx();
@@ -775,15 +775,11 @@ fontRange.addEventListener('input', () => {
     if (v) {
       statusBar.textContent = `✅ ${v.name}（粤语 · 离线可用）`;
     } else {
-      statusBar.textContent = 'ℹ️ 无粤语语音，可部署 Cloudflare Worker';
+      statusBar.textContent = 'ℹ️ 无粤语语音';
     }
   } else {
-    statusBar.textContent = 'ℹ️ 部署至 Cloudflare Pages 可启用在线引擎';
+    statusBar.textContent = 'ℹ️ 无粤语语音';
   }
-  try {
-    const r = await fetch(`${SPEECH_PROXY}?text=test`, { method: 'HEAD' });
-    if (r.ok) proxyAvailable = true;
-  } catch (e) {}
 })();
 
 const inputEl = document.getElementById('inputText');
