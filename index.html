@@ -222,7 +222,7 @@ function mergeSegments(segs) {
       out.push(segs[i]); i++; continue;
     }
     let merged = null;
-    for (let len = 4; len >= 2; len--) {
+    for (let len = 6; len >= 2; len--) {
       if (i + len > segs.length) continue;
       const combined = segs.slice(i, i + len).map(s => s.text).join('');
       if (segWords.has(combined) || segWords.has(s2tConvert(combined))) {
@@ -577,11 +577,11 @@ function segmentGreedy(text, reverse) {
       words.push(ch); i += dir; continue;
     }
     let matched = false;
-    for (let len = 4; len >= 2; len--) {
+    for (let len = 6; len >= 2; len--) {
       const start = reverse ? i - len : i;
       if (start < 0 || start + len > text.length) continue;
       const w = text.slice(start, start + len);
-      if (segWords.has(w)) { words.push(w); i += dir * len; matched = true; break; }
+      if (segWords.has(w) || segWords.has(s2tConvert(w))) { words.push(w); i += dir * len; matched = true; break; }
     }
     if (!matched) { words.push(ch); i += dir; }
   }
