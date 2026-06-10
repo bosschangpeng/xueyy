@@ -210,9 +210,10 @@ function toCantonese(text) {
 
 function segmentText(text) {
   if (!text.trim()) return [];
+  let segs;
   if (typeof Intl !== 'undefined' && Intl.Segmenter) {
     try {
-      const segs = [];
+      segs = [];
       const s = new Intl.Segmenter('zh-CN', { granularity: 'word' });
       for (const { segment, isWordLike } of s.segment(text)) {
         if (/^\s+$/.test(segment)) {
@@ -225,10 +226,31 @@ function segmentText(text) {
           segs.push({ text: segment, type: 'char' });
         }
       }
-      return segs;
-    } catch (e) {}
+    } catch (e) { segs = null; }
   }
-  return segmentTextFallback(text);
+  if (!segs) segs = segmentTextFallback(text);
+  return mergeSegments(segs);
+}
+
+// Post-process: merge consecutive single chars if they form a known word
+function mergeSegments(segs) {
+  const out = [];
+  let i = 0;
+  while (i < segs.length) {
+    if (segs[i].type !== 'char' || i + 1 >= segs.length) {
+      out.push(segs[i]); i++; continue;
+    }
+    let merged = null;
+    for (let len = 4; len >= 2; len--) {
+      if (i + len > segs.length) continue;
+      const combined = segs.slice(i, i + len).map(s => s.text).join('');
+      if (segWords.has(combined) || segWords.has(s2tConvert(combined))) {
+        merged = combined; out.push({ text: combined, type: 'word' }); i += len; break;
+      }
+    }
+    if (!merged) { out.push(segs[i]); i++; }
+  }
+  return out;
 }
 
 // Build comprehensive word set from cDict keys + common Chinese words
@@ -549,21 +571,19 @@ const segWords = new Set();
 })();
 
 function segmentTextFallback(text) {
-  const segs = [];
-  // Try both directions, pick fewer segments
   const ltr = segmentGreedy(text, false);
   const rtl = segmentGreedy(text, true);
   const best = ltr.length <= rtl.length ? ltr : rtl;
-  let i = 0;
+  const segs = [];
   for (const w of best) {
-    if (i < text.length && /\s/.test(text[i])) { segs.push({ text: text[i], type: 'space' }); i++; continue; }
-    if (i < text.length && /[，。！？、；：""''（）【】《》—…·,.!?;:\'"()\[\]{}<>@#$%^&*+\-=/\\|~`]/.test(text[i])) {
-      segs.push({ text: text[i], type: 'punct' }); i++; continue;
+    if (/\s/.test(w)) { segs.push({ text: w, type: 'space' }); }
+    else if (/[，。！？、；：""''（）【】《》—…·,.!?;:\'"()\[\]{}<>@#$%^&*+\-=/\\|~`]/.test(w)) {
+      segs.push({ text: w, type: 'punct' });
+    } else {
+      segs.push({ text: w, type: w.length > 1 ? 'word' : 'char' });
     }
-    segs.push({ text: w, type: w.length > 1 ? 'word' : 'char' });
-    i += w.length;
   }
-  return segs;
+  return mergeSegments(segs);
 }
 
 function segmentGreedy(text, reverse) {
