@@ -215,6 +215,15 @@ function segmentText(text) {
   const charCount = result.filter(s => s.type === 'char').length;
   window._segDebug = `词${wordCount}字${charCount} 段${result.length}`;
   console.log('[seg]', text, '→', result.map(s => s.text + ':' + s.type).join('|'));
+  // Diagnostic: test specific words
+  if (typeof segWords !== 'undefined') {
+    for (const w of ['日月','不变','千秋','无常','无声','紧']) {
+      const hasSC = segWords.has(w);
+      const hasTC = segWords.has(s2tConvert(w));
+      if (hasSC || hasTC) console.log(`  [dict] ${w} ✅ (SC:${hasSC}, TC:${hasTC})`);
+      else console.log(`  [dict] ${w} ❌`);
+    }
+  }
   return result;
 }
 
