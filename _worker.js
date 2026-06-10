@@ -43,6 +43,11 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname !== '/tts') return new Response(null, { status: 404 });
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,OPTIONS', 'Access-Control-Max-Age': '86400' },
+      });
+    }
 
     const text = url.searchParams.get('text');
     if (!text) return new Response('Missing text', { status: 400 });
