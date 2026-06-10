@@ -210,26 +210,7 @@ function toCantonese(text) {
 
 function segmentText(text) {
   if (!text.trim()) return [];
-  let segs;
-  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
-    try {
-      segs = [];
-      const s = new Intl.Segmenter('zh-CN', { granularity: 'word' });
-      for (const { segment, isWordLike } of s.segment(text)) {
-        if (/^\s+$/.test(segment)) {
-          for (const ch of segment) segs.push({ text: ch, type: 'space' });
-        } else if (!isWordLike) {
-          for (const ch of segment) segs.push({ text: ch, type: 'punct' });
-        } else if (segment.length > 1) {
-          segs.push({ text: segment, type: 'word' });
-        } else {
-          segs.push({ text: segment, type: 'char' });
-        }
-      }
-    } catch (e) { segs = null; }
-  }
-  if (!segs) segs = segmentTextFallback(text);
-  return mergeSegments(segs);
+  return mergeSegments(segmentTextFallback(text));
 }
 
 // Post-process: merge consecutive single chars if they form a known word
