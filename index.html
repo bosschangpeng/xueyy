@@ -550,26 +550,42 @@ const segWords = new Set();
 
 function segmentTextFallback(text) {
   const segs = [];
+  // Try both directions, pick fewer segments
+  const ltr = segmentGreedy(text, false);
+  const rtl = segmentGreedy(text, true);
+  const best = ltr.length <= rtl.length ? ltr : rtl;
   let i = 0;
-  while (i < text.length) {
+  for (const w of best) {
+    if (i < text.length && /\s/.test(text[i])) { segs.push({ text: text[i], type: 'space' }); i++; continue; }
+    if (i < text.length && /[，。！？、；：""''（）【】《》—…·,.!?;:\'"()\[\]{}<>@#$%^&*+\-=/\\|~`]/.test(text[i])) {
+      segs.push({ text: text[i], type: 'punct' }); i++; continue;
+    }
+    segs.push({ text: w, type: w.length > 1 ? 'word' : 'char' });
+    i += w.length;
+  }
+  return segs;
+}
+
+function segmentGreedy(text, reverse) {
+  const words = [];
+  let i = reverse ? text.length : 0;
+  while (reverse ? i > 0 : i < text.length) {
+    const dir = reverse ? -1 : 1;
     const ch = text[i];
-    if (/\s/.test(ch)) { segs.push({ text: ch, type: 'space' }); i++; continue; }
-    if (/[，。！？、；：""''（）【】《》—…·,.!?;:\'"()\[\]{}<>@#$%^&*+\-=/\\|~`]/.test(ch)) {
-      segs.push({ text: ch, type: 'punct' }); i++; continue;
+    if (/\s/.test(ch) || /[，。！？、；：""''（）【】《》—…·,.!?;:\'"()\[\]{}<>@#$%^&*+\-=/\\|~`]/.test(ch)) {
+      words.push(ch); i += dir; continue;
     }
     let matched = false;
     for (let len = 4; len >= 2; len--) {
-      if (i + len <= text.length) {
-        const w = text.slice(i, i + len);
-        if (segWords.has(w)) {
-          segs.push({ text: w, type: 'word' });
-          i += len; matched = true; break;
-        }
-      }
+      const start = reverse ? i - len : i;
+      if (start < 0 || start + len > text.length) continue;
+      const w = text.slice(start, start + len);
+      if (segWords.has(w)) { words.push(w); i += dir * len; matched = true; break; }
     }
-    if (!matched) { segs.push({ text: ch, type: 'char' }); i++; }
+    if (!matched) { words.push(ch); i += dir; }
   }
-  return segs;
+  if (reverse) words.reverse();
+  return words;
 }
 
 let currentUtterance = null;
