@@ -343,10 +343,13 @@ voiceSelect.addEventListener('change', () => {
   localStorage.setItem('yueVoiceURI', selectedVoiceURI);
 });
 
+let cachedVoice = null;
+let voiceLoading = false;
+
 async function resolveVoice() {
   if (cachedVoice) return cachedVoice;
   if (!selectedVoiceURI) {
-    cachedVoice = await getCantoneseVoice();
+    if (!voiceLoading) { voiceLoading = true; cachedVoice = await getCantoneseVoice(); voiceLoading = false; }
     return cachedVoice;
   }
   const voices = speechSynthesis.getVoices();
@@ -354,15 +357,23 @@ async function resolveVoice() {
   return cachedVoice;
 }
 
-let cachedVoice = null;
 function getCantoneseVoice() {
   return new Promise(resolve => {
-    let v = speechSynthesis.getVoices();
-    if (v.length) { cachedVoice = pickCantonese(v); resolve(cachedVoice); return; }
     let resolved = false;
-    const done = (voice) => { if (!resolved) { resolved = true; cachedVoice = voice; resolve(voice); } };
-    speechSynthesis.onvoiceschanged = () => done(pickCantonese(speechSynthesis.getVoices()));
-    setTimeout(() => done(null), 1000);
+    let tries = 0;
+    const poll = () => {
+      if (resolved) return;
+      const v = speechSynthesis.getVoices();
+      if (v.length) {
+        const found = pickCantonese(v);
+        if (found) { resolved = true; resolve(found); return; }
+      }
+      tries++;
+      if (tries >= 30) { resolved = true; resolve(null); return; }
+      setTimeout(poll, 100);
+    };
+    speechSynthesis.onvoiceschanged = poll;
+    poll();
   });
 }
 function pickCantonese(voices) {
