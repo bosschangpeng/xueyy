@@ -76,9 +76,29 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .modal-body{padding:16px;overflow-y:auto;max-height:calc(80vh - 60px)}
 .modal-footer{padding:12px 16px;border-top:1px solid var(--border);text-align:right}
 @media(max-width:480px){.container{padding:8px}.card{padding:12px}.header h1{font-size:1.25rem}.segment{padding:5px 8px}.toolbar{gap:6px}.btn{padding:8px 10px;font-size:.82rem}.speed-control input[type=range]{width:68px}.controls-row{gap:4px 8px;font-size:.75rem}.controls-row select{max-width:130px;font-size:.75rem}.range-wrap input[type=range]{width:48px}}
+.auth-overlay{position:fixed;inset:0;z-index:9999;background:#f0f4fa;display:flex;justify-content:center;align-items:center;flex-direction:column;padding:24px;transition:opacity .5s}
+.auth-overlay.hidden{opacity:0;pointer-events:none}
+.auth-box{background:#fff;border-radius:16px;padding:36px 32px;box-shadow:0 4px 30px rgba(0,0,0,.08);width:100%;max-width:380px;text-align:center}
+.auth-box h2{font-size:1.3rem;color:var(--primary);margin-bottom:4px}
+.auth-box p{font-size:.85rem;color:var(--text-light);margin-bottom:20px;line-height:1.5}
+.auth-box input{width:100%;padding:12px 16px;border:2px solid var(--border);border-radius:10px;font-size:1rem;outline:none;transition:border-color.2s;box-sizing:border-box}
+.auth-box input:focus{border-color:var(--primary)}
+.auth-box .btn{margin-top:14px;width:100%;justify-content:center;padding:12px;font-size:1rem;border-radius:10px}
+.auth-box .hint{font-size:.75rem;color:#c0c6d0;margin-top:12px}
+.auth-box .error{color:var(--danger);font-size:.8rem;margin-top:8px;min-height:1.2em}
 </style>
 </head>
 <body>
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-box">
+    <h2>🗣 粤语学习助手</h2>
+    <p>请输入你的微信 ID 以继续使用</p>
+    <input type="text" id="authInput" placeholder="微信号（字母开头，6-20位）" maxlength="20" autocomplete="off">
+    <button class="btn btn-primary" id="authBtn">进入</button>
+    <div class="error" id="authError"></div>
+    <div class="hint">仅作身份验证，不会收集你的个人信息</div>
+  </div>
+</div>
 <div class="container">
   <div class="header">
     <h1>🗣 粤语学习助手</h1>
@@ -748,6 +768,31 @@ const savedHistory = JSON.parse(localStorage.getItem('yueHistory') || '[]');
 if (savedHistory.length && !inputEl.value.trim()) {
   inputEl.placeholder = '在此粘贴歌词或文本...\n例如：\n原谅我这一生不羁放纵爱自由\n也会怕有一天会跌倒';
 }
+// Auth gate
+const authOverlay = document.getElementById('authOverlay');
+const authInput = document.getElementById('authInput');
+const authBtn = document.getElementById('authBtn');
+const authError = document.getElementById('authError');
+
+function checkAuth() {
+  const authed = localStorage.getItem('yueAuthed') === '1';
+  if (authed) { authOverlay.classList.add('hidden'); return true; }
+  return false;
+}
+
+authBtn.addEventListener('click', () => {
+  const val = authInput.value.trim();
+  if (val.length < 3) { authError.textContent = '微信号至少 3 位'; return; }
+  if (!/^[a-zA-Z][a-zA-Z0-9_]+$/.test(val)) { authError.textContent = '微信号以字母开头，只能包含字母数字下划线'; return; }
+  localStorage.setItem('yueAuthed', '1');
+  localStorage.setItem('yueAuthedID', val);
+  authOverlay.classList.add('hidden');
+  statusBar.textContent = `已通过验证，欢迎 ${val}`;
+});
+
+authInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') authBtn.click(); });
+
+if (!checkAuth()) { document.body.style.overflow = 'hidden'; }
 </script>
 </body>
 </html>
