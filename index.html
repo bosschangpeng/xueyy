@@ -210,11 +210,7 @@ function toCantonese(text) {
 
 function segmentText(text) {
   if (!text.trim()) return [];
-  const result = mergeSegments(segmentTextFallback(text));
-  // Diagnostic
-  console.log('[seg]', text.slice(0,30), '→', result.map(s => s.text + ':' + s.type).join('|'));
-  if (segWords.size) console.log('[seg] segWords size:', segWords.size, '| 日月:', segWords.has('日月'), '变:', s2tConvert('不变'));
-  return result;
+  return mergeSegments(segmentTextFallback(text));
 }
 
 // Post-process: merge consecutive single chars if they form a known word
