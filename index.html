@@ -344,19 +344,25 @@ voiceSelect.addEventListener('change', () => {
 });
 
 async function resolveVoice() {
-  if (!selectedVoiceURI) return await getCantoneseVoice();
+  if (cachedVoice) return cachedVoice;
+  if (!selectedVoiceURI) {
+    cachedVoice = await getCantoneseVoice();
+    return cachedVoice;
+  }
   const voices = speechSynthesis.getVoices();
-  return voices.find(v => v.uri === selectedVoiceURI || v.name === selectedVoiceURI) || null;
+  cachedVoice = voices.find(v => v.uri === selectedVoiceURI || v.name === selectedVoiceURI) || null;
+  return cachedVoice;
 }
 
+let cachedVoice = null;
 function getCantoneseVoice() {
   return new Promise(resolve => {
     let v = speechSynthesis.getVoices();
-    if (v.length) { resolve(pickCantonese(v)); return; }
+    if (v.length) { cachedVoice = pickCantonese(v); resolve(cachedVoice); return; }
     let resolved = false;
-    const done = (voice) => { if (!resolved) { resolved = true; resolve(voice); } };
+    const done = (voice) => { if (!resolved) { resolved = true; cachedVoice = voice; resolve(voice); } };
     speechSynthesis.onvoiceschanged = () => done(pickCantonese(speechSynthesis.getVoices()));
-    setTimeout(() => done(null), 3000);
+    setTimeout(() => done(null), 1000);
   });
 }
 function pickCantonese(voices) {
@@ -413,7 +419,7 @@ function speakOne(text, rate, vol, voice, idx, total) {
     window.speechSynthesis.speak(u);
     setTimeout(() => {
       if (currentUtterance) { currentUtterance = null; resolve(true); }
-    }, Math.max(text.length * 150 / rate, 800));
+    }, Math.max(text.length * 150 / rate, 500));
   });
 }
 
