@@ -753,9 +753,6 @@ clearHistoryBtn.addEventListener('click', () => {
   showToast('历史已清空');
 });
 
-if ('serviceWorker' in navigator) {
-  // PWA-ready
-}
 
 // Initialize: if there's saved text
 const savedHistory = JSON.parse(localStorage.getItem('yueHistory') || '[]');
