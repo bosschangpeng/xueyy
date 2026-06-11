@@ -325,7 +325,7 @@ function populateVoiceList() {
     const name = v.name.toLowerCase();
     const gender = name.includes('huihui') || name.includes('female') || name.includes('sin-ji') ? '♀女' :
                    name.includes('zira') || name.includes('male') ? '♂男' : '';
-    const label = `${v.name} · ${v.lang}${gender ? ' ' + gender : ''}`;
+    const label = `${v.name}${gender ? ' · ' + gender : ''}`;
     const opt = document.createElement('option');
     opt.value = v.uri || v.name;
     opt.textContent = label;
