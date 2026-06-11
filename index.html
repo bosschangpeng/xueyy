@@ -314,22 +314,24 @@ let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
 
 function populateVoiceList() {
   const voices = speechSynthesis.getVoices();
-  const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.startsWith('yue'));
+  const yueVoices = voices.filter(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue'));
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
-  if (!zhVoices.length) {
-    voiceSelect.innerHTML = '<option value="">未检测到语音</option>';
+  if (!yueVoices.length) {
+    voiceSelect.innerHTML = '<option value="">未检测到粤语语音</option>';
     return;
   }
-  for (const v of zhVoices) {
-    const label = `${v.name} (${v.lang})`;
+  for (const v of yueVoices) {
+    const nm = v.name.toLowerCase();
+    const gender = nm.includes('huihui') || nm.includes('female') || nm.includes('sin-ji') ? '♀女' :
+                   nm.includes('zira') || nm.includes('male') ? '♂男' : '';
+    const label = `${v.name}${gender ? ' · ' + gender : ''}`;
     const opt = document.createElement('option');
     opt.value = v.uri || v.name;
     opt.textContent = label;
     if (opt.value === prev || v.uri === selectedVoiceURI || v.name === selectedVoiceURI) opt.selected = true;
     voiceSelect.appendChild(opt);
   }
-  console.log('Voices:', zhVoices.map(v => v.name + ' [' + v.lang + ']'));
 }
 if ('speechSynthesis' in window) {
   speechSynthesis.addEventListener('voiceschanged', populateVoiceList);
