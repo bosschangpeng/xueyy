@@ -314,7 +314,7 @@ let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
 
 function populateVoiceList() {
   const voices = speechSynthesis.getVoices();
-  const yueVoices = voices.filter(v => (v.lang.startsWith('zh-HK') || v.lang.startsWith('yue')) && !v.lang.startsWith('zh-CN') && !v.lang.startsWith('zh-TW') && !v.lang.startsWith('zh-Hans'));
+  const yueVoices = voices.filter(v => v.lang === 'zh-HK' || v.lang.startsWith('zh-HK-') || v.lang === 'yue' || v.lang.startsWith('yue-'));
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
   if (!yueVoices.length) {
