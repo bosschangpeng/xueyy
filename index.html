@@ -314,7 +314,13 @@ let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
 
 function populateVoiceList() {
   const voices = speechSynthesis.getVoices();
-  const yueVoices = voices.filter(v => v.lang === 'zh-HK' || v.lang.startsWith('zh-HK-') || v.lang === 'yue' || v.lang.startsWith('yue-'));
+  const yueVoices = voices.filter(v => {
+    const l = v.lang.toLowerCase();
+    if (l !== 'zh-hk' && !l.startsWith('zh-hk-') && l !== 'yue' && !l.startsWith('yue-')) return false;
+    const n = v.name.toLowerCase();
+    if (/晓敏|云松|xiaoxiao|yunsong|huihui.*(simplified|china|mainland|中文.*简体|简体)/i.test(n)) return false;
+    return true;
+  });
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
   if (!yueVoices.length) {
