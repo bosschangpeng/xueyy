@@ -338,6 +338,7 @@ if ('speechSynthesis' in window) {
 
 voiceSelect.addEventListener('change', () => {
   selectedVoiceURI = voiceSelect.value;
+  cachedVoice = null;
   localStorage.setItem('yueVoiceURI', selectedVoiceURI);
 });
 
@@ -529,6 +530,7 @@ let historyTimer = null;
 inputEl.addEventListener('input', () => {
   const len = [...inputEl.value].length;
   charCount.textContent = len;
+  if (savedOriginal && inputEl.value !== savedOriginal) { savedOriginal = ''; translateBtn.textContent = '📝 转白话'; }
   if (!inputEl.value.trim()) {
     segContainer.innerHTML = '<div class="placeholder-text">👆 在上方输入文本，点击「转白话」或直接开始学习</div>';
     currentSentences = [];
@@ -629,14 +631,26 @@ async function playWord(si, wi) {
   await speak(w.text, parseFloat(speedRange.value));
 }
 
+let savedOriginal = '';
 translateBtn.addEventListener('click', () => {
+  if (savedOriginal) {
+    inputEl.value = savedOriginal;
+    charCount.textContent = [...savedOriginal].length;
+    renderSentences(savedOriginal);
+    savedOriginal = '';
+    translateBtn.textContent = '📝 转白话';
+    showToast('✅ 已还原');
+    return;
+  }
   const text = inputEl.value.trim();
   if (!text) { showToast('请先输入文本'); return; }
+  savedOriginal = text;
   const ct = toCantonese(text);
   inputEl.value = ct;
   charCount.textContent = [...ct].length;
   renderSentences(ct);
   addHistory(text, ct);
+  translateBtn.textContent = '↩ 还原';
   showToast('✅ 已转换为白话');
 });
 
