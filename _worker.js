@@ -1,6 +1,7 @@
 // 粤语学习助手 — 密码 + 邀请码双验证
-// ACCESS_PWD = 你的管理员密码（永不过期）
-// ALLOWED_CODES = code1,code2（发给别人的邀请码）
+// ACCESS_PWD = 管理员密码（永久有效，不消耗）
+// ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
+// KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
 const COOKIE_DAYS = 3650;
@@ -33,26 +34,72 @@ document.getElementById('inp').onkeydown=e=>{if(e.key==='Enter')document.getElem
 <\/script>
 </body></html>`;
 
+function token() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2,'0')).join('');
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const adminPwd = env.ACCESS_PWD || '';
     const allowedCodes = (env.ALLOWED_CODES || '').split(',').map(s => s.trim()).filter(Boolean);
+    const kv = env.YUE_KV;
 
     if (url.pathname === '/auth') {
       const code = url.searchParams.get('code') || '';
-      const valid = (adminPwd && code === adminPwd) || allowedCodes.includes(code);
-      if (valid) {
+
+      // 管理员密码无限次
+      if (adminPwd && code === adminPwd) {
         const headers = new Headers();
-        headers.set('Set-Cookie', `${AUTH_COOKIE}=1; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
+        headers.set('Set-Cookie', `${AUTH_COOKIE}=admin:${token()}; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
         headers.set('Location', '/');
         return new Response(null, { status: 302, headers });
       }
-      return new Response(PAGE(adminPwd ? '密码或邀请码无效' : '邀请码无效'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+
+      // 邀请码：检查是否在允许列表
+      if (!allowedCodes.includes(code)) {
+        return new Response(PAGE('邀请码无效'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+      }
+
+      // 邀请码：查 KV 是否已被占用
+      if (kv) {
+        const existing = await kv.get(code);
+        if (existing) {
+          return new Response(PAGE('该邀请码已被使用'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+        }
+        const tok = token();
+        await kv.put(code, tok, { expirationTtl: 86400 * COOKIE_DAYS });
+        const headers = new Headers();
+        headers.set('Set-Cookie', `${AUTH_COOKIE}=${code}:${tok}; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
+        headers.set('Location', '/');
+        return new Response(null, { status: 302, headers });
+      }
+
+      // 无 KV：降级为纯列表验证
+      const headers = new Headers();
+      headers.set('Set-Cookie', `${AUTH_COOKIE}=1; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
+      headers.set('Location', '/');
+      return new Response(null, { status: 302, headers });
     }
 
+    // 检查 cookie
     const cookie = request.headers.get('Cookie') || '';
-    if (cookie.includes(AUTH_COOKIE + '=1')) return env.ASSETS.fetch(request);
+    const m = cookie.match(new RegExp(AUTH_COOKIE + '=([^;]+)'));
+    if (m) {
+      const val = m[1];
+      // 管理员
+      if (val.startsWith('admin:')) return env.ASSETS.fetch(request);
+      // 邀请码：验证 token
+      if (kv) {
+        const [code, tok] = val.split(':');
+        if (code && tok) {
+          const stored = await kv.get(code);
+          if (stored === tok) return env.ASSETS.fetch(request);
+        }
+      } else if (val === '1') {
+        return env.ASSETS.fetch(request);
+      }
+    }
 
     return new Response(PAGE(''), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
   },
