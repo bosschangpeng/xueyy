@@ -1,17 +1,9 @@
-// Cloudflare Pages Worker — 粤语学习助手
-// 首次部署后访问域名，输入邀请码即可使用
-// 设置环境变量 ALLOWED_CODES = code1,code2,code3
+// 粤语学习助手 — KV 绑定版验证
+// 环境变量 ALLOWED_CODES = code1,code2,code3
+// KV 命名空间绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
 const COOKIE_DAYS = 60;
-
-// TTS 代理
-const TTS_SOURCES = [
-  { name: 'youdao', url: (t) => `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=2`,
-    headers: { 'Referer': 'https://dict.youdao.com/' } },
-  { name: 'baidu', url: (t) => `https://fanyi.baidu.com/gettts?lan=yue&text=${encodeURIComponent(t)}&spd=5&source=web`,
-    headers: { 'Referer': 'https://fanyi.baidu.com/' } },
-];
 
 const PAGE = (msg) => `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -35,7 +27,7 @@ background:#f0f4fa;min-height:100vh;display:flex;justify-content:center;align-it
 <input type="text" id="inp" placeholder="邀请码" maxlength="30" autocomplete="off">
 <button id="btn">验证</button>
 <div class="msg" id="msg">${msg||''}</div>
-<div class="hint">仅限受邀用户使用</div>
+<div class="hint">每个邀请码仅限一人使用</div>
 </div>
 <script>
 document.getElementById('btn').onclick=()=>{const v=document.getElementById('inp').value.trim();if(!v){document.getElementById('msg').textContent='请输入邀请码';return;}window.location.href='/auth?code='+encodeURIComponent(v);};
@@ -43,46 +35,50 @@ document.getElementById('inp').onkeydown=e=>{if(e.key==='Enter')document.getElem
 <\/script>
 </body></html>`;
 
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+function randomToken() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,'0')).join('');
+}
 
-    // TTS 代理接口（不验证）
-    if (url.pathname === '/tts') {
-      if (request.method === 'OPTIONS') return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,OPTIONS' } });
-      const text = url.searchParams.get('text');
-      if (!text) return new Response('Missing text', { status: 400 });
-      for (const src of TTS_SOURCES) {
-        try {
-          const resp = await fetch(src.url(text), { headers: src.headers });
-          if (!resp.ok) continue;
-          const buf = await resp.arrayBuffer();
-          if (buf.byteLength > 100) return new Response(buf, { headers: { 'Content-Type': 'audio/mpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=3600' } });
-        } catch (e) { continue; }
-      }
-      return new Response('TTS unavailable', { status: 502 });
-    }
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
 
     // 验证邀请码
     if (url.pathname === '/auth') {
       const code = url.searchParams.get('code') || '';
       const allowed = (env.ALLOWED_CODES || '').split(',').map(s => s.trim()).filter(Boolean);
-      if (allowed.includes(code)) {
-        const headers = new Headers();
-        headers.set('Set-Cookie', `${AUTH_COOKIE}=${code}; Path=/; Max-Age=${86400*COOKIE_DAYS}; SameSite=Lax`);
-        headers.append('Location', '/');
-        return new Response(null, { status: 302, headers });
+
+      if (!allowed.includes(code)) {
+        return new Response(PAGE('邀请码无效'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
       }
-      return new Response(PAGE('邀请码无效'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+
+      // KV 查是否已被占用
+      const existing = await env.YUE_KV.get(code);
+      if (existing) {
+        return new Response(PAGE('该邀请码已被使用'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+      }
+
+      // 首次使用，生成 token 绑定
+      const token = randomToken();
+      await env.YUE_KV.put(code, token, { expirationTtl: 86400 * COOKIE_DAYS });
+
+      const headers = new Headers();
+      headers.set('Set-Cookie', `${AUTH_COOKIE}=${code}:${token}; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax; HttpOnly`);
+      headers.set('Location', '/');
+      return new Response(null, { status: 302, headers });
     }
 
-    // 检查认证
+    // 检查 cookie
     const cookie = request.headers.get('Cookie') || '';
     const match = cookie.match(new RegExp(AUTH_COOKIE + '=([^;]+)'));
-    const authed = match ? match[1] : '';
-    const allowed = (env.ALLOWED_CODES || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (authed && allowed.includes(authed)) {
-      return env.ASSETS.fetch(request);
+    if (match) {
+      const [code, token] = match[1].split(':');
+      if (code && token) {
+        const stored = await env.YUE_KV.get(code);
+        if (stored === token) {
+          return env.ASSETS.fetch(request);
+        }
+      }
     }
 
     // 未认证 → 返回登录页
