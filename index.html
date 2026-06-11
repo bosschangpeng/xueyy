@@ -314,13 +314,7 @@ let selectedVoiceURI = localStorage.getItem('yueVoiceURI') || '';
 
 function populateVoiceList() {
   const voices = speechSynthesis.getVoices();
-  const yueVoices = voices.filter(v => {
-    const l = v.lang.toLowerCase();
-    if (l !== 'zh-hk' && !l.startsWith('zh-hk-') && l !== 'yue' && !l.startsWith('yue-')) return false;
-    const n = v.name.toLowerCase();
-    if (/晓敏|云松|xiaoxiao|yunsong|huihui.*(simplified|china|mainland|中文.*简体|简体)/i.test(n)) return false;
-    return true;
-  });
+  const yueVoices = voices.filter(v => v.lang === 'zh-HK' || v.lang.startsWith('zh-HK-') || v.lang === 'yue' || v.lang.startsWith('yue-'));
   const prev = voiceSelect.value;
   voiceSelect.innerHTML = '';
   if (!yueVoices.length) {
@@ -331,7 +325,7 @@ function populateVoiceList() {
     const name = v.name.toLowerCase();
     const gender = name.includes('huihui') || name.includes('female') || name.includes('sin-ji') ? '♀女' :
                    name.includes('zira') || name.includes('male') ? '♂男' : '';
-    const label = `${v.name}${gender ? ' · ' + gender : ''}`;
+    const label = `${v.name} · ${v.lang}${gender ? ' ' + gender : ''}`;
     const opt = document.createElement('option');
     opt.value = v.uri || v.name;
     opt.textContent = label;
