@@ -53,6 +53,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .segment.word:active,.segment.word.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active)}
 .segment.punct{cursor:default;color:var(--text-light);background:transparent;padding:6px 4px;border-color:transparent}
 .segment.space{cursor:default;background:transparent;min-width:10px;border-color:transparent}
+.segment.solo-jp{font-size:calc(var(--seg-size,1.15rem) * 1.6);font-weight:700;color:var(--primary);background:#e8f0fe;border:2px solid #b0c8e8;padding:8px 14px;letter-spacing:1px;font-family:Arial,sans-serif;cursor:pointer}
+.segment.solo-jp:active,.segment.solo-jp.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active)}
 .jp{display:block;font-size:calc(var(--seg-size,1.15rem) * 0.56);color:#8a93a5;line-height:1.25;margin-top:2px;font-family:Arial,sans-serif;letter-spacing:0;font-weight:400}
 .jp .miss{color:#d0d6e0;font-style:italic}
 .segment.word .jp,.segment.char .jp{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -109,6 +111,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
         <span class="rv" id="fontLabel">1.0</span>
       </div></label>
       <label style="cursor:pointer;user-select:none"><input type="checkbox" id="jpToggle"> 粤拼</label>
+      <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
     </div>
   </div>
   <div class="card">
@@ -514,9 +517,18 @@ const toast = document.getElementById('toast');
 
 let currentSentences = [];
 let showJyutping = false;
+let soloJyutping = false;
 const jpToggle = document.getElementById('jpToggle');
+const soloJpToggle = document.getElementById('soloJpToggle');
+const soloJpWrap = document.getElementById('soloJpWrap');
 jpToggle.addEventListener('change', () => {
   showJyutping = jpToggle.checked;
+  soloJpWrap.style.display = showJyutping ? '' : 'none';
+  if (!showJyutping) { soloJpToggle.checked = false; soloJyutping = false; }
+  renderSentences(inputEl.value || '');
+});
+soloJpToggle.addEventListener('change', () => {
+  soloJyutping = soloJpToggle.checked;
   renderSentences(inputEl.value || '');
 });
 
@@ -587,6 +599,12 @@ function renderSentences(text) {
       const el = document.createElement('span');
       el.className = 'segment ' + w.type;
       if (w.type === 'space') { el.innerHTML = '&nbsp;'; }
+      else if (soloJyutping && showJyutping && w.type !== 'punct') {
+        const jp = getJyutpingForWord(w);
+        el.className = 'segment solo-jp';
+        el.textContent = jp || '?';
+        el.title = w.text;
+      }
       else if (showJyutping && w.type !== 'punct' && w.type !== 'space') {
         const jp = getJyutpingForWord(w);
         el.innerHTML = `<span class="ch">${w.text}</span>${jp ? `<span class="jp">${jp}</span>` : ''}`;
