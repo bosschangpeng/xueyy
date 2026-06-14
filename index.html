@@ -292,6 +292,7 @@ let currentAudioCtx = null;
 let currentAudioSrc = null;
 let proxyAvailable = null;
 let proxyRetryAt = 0;
+let speakCooldown = false;
 
 const SPEECH_PROXY = '/tts';
 
@@ -422,19 +423,22 @@ async function speak(text, rate = 1) {
 
 function speakOne(text, rate, vol, voice, idx, total) {
   return new Promise(resolve => {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'zh-HK';
-    u.rate = Math.max(0.1, Math.min(10, rate));
-    u.volume = 1;
-    u.voice = voice;
-    currentUtterance = u;
-    statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
-    u.onend = () => { currentUtterance = null; resolve(true); };
-    u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); resolve(false); };
-    window.speechSynthesis.speak(u);
+    window.speechSynthesis.cancel();
     setTimeout(() => {
-      if (currentUtterance) { currentUtterance = null; resolve(true); }
-    }, Math.max(text.length * 150 / rate, 500));
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-HK';
+      u.rate = Math.max(0.1, Math.min(10, rate));
+      u.volume = 1;
+      u.voice = voice;
+      currentUtterance = u;
+      statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
+      u.onend = () => { currentUtterance = null; resolve(true); };
+      u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); resolve(false); };
+      window.speechSynthesis.speak(u);
+      setTimeout(() => {
+        if (currentUtterance === u) { currentUtterance = null; resolve(true); }
+      }, Math.max(text.length * 150 / rate, 500));
+    }, 50);
   });
 }
 
@@ -468,7 +472,9 @@ async function tryFetchAudio(url, rate) {
 }
 
 function stopSpeak() {
-  if (currentUtterance) { window.speechSynthesis.cancel(); currentUtterance = null; }
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.resume();
+  currentUtterance = null;
   if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch(e) {} currentAudioSrc = null; }
 }
 
@@ -628,6 +634,9 @@ function clearHighlight() {
 }
 
 async function playSentence(si) {
+  if (speakCooldown) return;
+  speakCooldown = true;
+  setTimeout(() => { speakCooldown = false; }, 300);
   const s = currentSentences[si];
   if (!s) return;
   stopSpeak(); clearHighlight();
@@ -639,6 +648,9 @@ async function playSentence(si) {
 }
 
 async function playWord(si, wi) {
+  if (speakCooldown) return;
+  speakCooldown = true;
+  setTimeout(() => { speakCooldown = false; }, 300);
   const s = currentSentences[si];
   if (!s || !s.words[wi]) return;
   const w = s.words[wi];
@@ -675,6 +687,9 @@ translateBtn.addEventListener('click', () => {
 });
 
 speakAllBtn.addEventListener('click', async () => {
+  if (speakCooldown) return;
+  speakCooldown = true;
+  setTimeout(() => { speakCooldown = false; }, 300);
   const text = inputEl.value.trim();
   if (!text) { showToast('没有可朗读的内容'); return; }
   stopSpeak(); clearHighlight();
