@@ -570,8 +570,8 @@ class TtsCache {
   }
   async open() {
     return new Promise((resolve, reject) => {
-      const r = indexedDB.open(CACHE_DB, 1);
-      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('a')) r.result.createObjectStore('a'); };
+      const r = indexedDB.open(CACHE_DB, 2);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('a')) r.result.createObjectStore('a', {keyPath:'k'}); else { r.result.deleteObjectStore('a'); r.result.createObjectStore('a', {keyPath:'k'}); } };
       r.onsuccess = () => { this.db = r.result; console.log('IndexedDB opened'); resolve(); };
       r.onerror = () => { console.error('IndexedDB open failed:', r.error); reject(r.error); };
       r.onblocked = () => { console.error('IndexedDB blocked'); reject(new Error('blocked')); };
