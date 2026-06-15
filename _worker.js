@@ -89,7 +89,7 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
-// ── 预处理：整句 TTS → 返回整段 WAV + 字段时间，前端切片 ──
+// ── 预处理：只返回字段时间映射 + WAV 参数，音频由前端另取 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
   const wordPos = body.words || {};
@@ -98,8 +98,8 @@ async function preprocessTts(env, body) {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
+  // 解析 WAV 头部（只读参数，不转 hex）
   const fullWav = hexToBytes(data.data?.audio || '');
-  // 解析 WAV 头部
   const dv = new DataView(fullWav.buffer, fullWav.byteOffset, fullWav.byteLength);
   let _off = 12, pcmOff = 0, pcmSize = 0, wavSr = 32000, wavCh = 1, wavBits = 16;
   while (_off < fullWav.length - 8) {
@@ -129,8 +129,7 @@ async function preprocessTts(env, body) {
     const sBegin = item.text_begin || 0;
     for (const w of twords) {
       for (let ci = w.word_begin - sBegin; ci < w.word_end - sBegin; ci++) {
-        const r = ci / totalChars;
-        charTime[sBegin + ci] = [item.time_begin + r * totalTime, item.time_begin + ((ci + 1) / totalChars) * totalTime];
+        charTime[sBegin + ci] = [item.time_begin + (ci / totalChars) * totalTime, item.time_begin + ((ci + 1) / totalChars) * totalTime];
       }
     }
   }
@@ -145,13 +144,7 @@ async function preprocessTts(env, body) {
       charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
   }
 
-  return {
-    full_audio_hex: bytesToHex(fullWav),
-    char_time: charTime,
-    word_pos: wordPos,
-    sr: wavSr, ch: wavCh, bits: wavBits,
-    data_off: pcmOff, data_size: pcmSize,
-  };
+  return { char_time: charTime, word_pos: wordPos, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text };
 }
 
 

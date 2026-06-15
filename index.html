@@ -761,14 +761,51 @@ preprocessBtn.addEventListener('click', async () => {
       throw new Error(msg);
     }
     const preData = await resp.json();
-    if (!preData.full_audio_hex) { statusBar.textContent = '❌ Worker 返回空音频'; throw new Error('empty audio'); }
-    const fullWav = new Uint8Array(preData.full_audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-    const charTime = preData.char_time || [];
-    const wordPos2 = preData.word_pos || {};
+    if (!preData.char_time || !preData.word_pos) { statusBar.textContent = '❌ 预处理数据无效'; return; }
     const dataOff = preData.data_off || 44;
-    if (dataOff < 4) { statusBar.textContent = '❌ WAV 解析失败'; throw new Error('bad WAV'); }
-    const bytesPerMs = preData.sr * preData.ch * (preData.bits / 8) / 1000;
-    const wavHdr = fullWav.slice(0, dataOff);
+    if (dataOff < 4) { statusBar.textContent = '❌ WAV 解析失败'; return; }
+
+    statusBar.textContent = '⚡ 下载音频...';
+    const audioResp = await fetch('/tts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: preData.text, voice: minimaxVoice }),
+    });
+    if (!audioResp.ok) throw new Error('音频下载失败');
+    const audioBlob = await audioResp.blob();
+
+    statusBar.textContent = '⚡ 解码音频...';
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const audioBuf = await ctx.decodeAudioData(await audioBlob.arrayBuffer());
+    const ch = Math.min(audioBuf.numberOfChannels, preData.ch || 1);
+    const sr = audioBuf.sampleRate;
+    const bytesPerMs = sr * ch * 2 / 1000;
+    // 把 AudioBuffer 的 float32 PCM 转成 int16 字节数组
+    const pcmLen = audioBuf.length * ch;
+    const pcmBytes = new Uint8Array(pcmLen * 2);
+    for (let c = 0; c < ch; c++) {
+      const cd = audioBuf.getChannelData(c);
+      for (let i = 0; i < audioBuf.length; i++) {
+        const s = Math.max(-1, Math.min(1, cd[i]));
+        const val = s < 0 ? s * 32768 : s * 32767;
+        const byteOff = (i * ch + c) * 2;
+        pcmBytes[byteOff] = val & 0xFF;
+        pcmBytes[byteOff + 1] = (val >> 8) & 0xFF;
+      }
+    }
+
+    // 切片 + 缓存
+    const charTime = preData.char_time;
+    const wordPos2 = preData.word_pos || {};
+    const header44 = new Uint8Array([
+      0x52,0x49,0x46,0x46,0,0,0,0,0x57,0x41,0x56,0x45,0x66,0x6D,0x74,0x20,
+      16,0,0,0,1,0,ch,0,0,0,0,0,0,0,0,0,0,0,0,0,16,0,0x64,0x61,0x74,0x61,0,0,0,0]);
+    const dv = new DataView(header44.buffer);
+    const blockAlign = ch * 2;
+    dv.setUint32(24, sr, true);
+    dv.setUint32(28, sr * blockAlign, true);
+    dv.setUint16(32, blockAlign, true);
+    dv.setUint16(34, 16, true);
 
     let cached = 0;
     const entries = Object.entries(wordPos2);
@@ -784,15 +821,15 @@ preprocessBtn.addEventListener('click', async () => {
       if (startMs !== null && endMs !== null && endMs > startMs) {
         const sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
         const eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
-        if (sb < preData.data_size) {
-          const pcm = fullWav.slice(dataOff + sb, dataOff + Math.min(eb, preData.data_size));
-          if (pcm.length >= 100) {
-            const out = new Uint8Array(wavHdr.length + pcm.length);
-            out.set(wavHdr, 0);
-            const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
-            dv.setUint32(4, out.length - 8, true);
-            dv.setUint32(dataOff - 4, pcm.length, true);
-            out.set(pcm, wavHdr.length);
+        if (sb < pcmLen * 2) {
+          const slice = pcmBytes.slice(sb, Math.min(eb, pcmLen * 2));
+          if (slice.length >= 100) {
+            const out = new Uint8Array(44 + slice.length);
+            out.set(header44, 0);
+            const od = new DataView(out.buffer);
+            od.setUint32(4, out.length - 8, true);
+            od.setUint32(40, slice.length, true);
+            out.set(slice, 44);
             if (cacheAvailable) {
               await ttsCache.set(wtext, new Blob([out], { type: 'audio/wav' }));
               cached++;
