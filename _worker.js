@@ -89,22 +89,28 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
-// ── 预处理：整句 TTS → 按前端分词切 PCM 直切 ──
+// ── 预处理：整句 TTS → WAV 头部保留 → PCM 切片 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
-  const wordPos = body.words || {}; // { "没": [0,1], "说": [1,2], ... }
+  const wordPos = body.words || {};
 
   // 1. 调用 MiniMax
   const data = await minimaxTts(env, { text, voice: body.voice }, {
-    format: 'pcm',
-    subtitle_enable: true,
-    subtitle_type: 'word',
+    format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
-  const fullAudio = hexToBytes(data.data?.audio || '');
-  const sr = data.extra_info?.audio_sample_rate || 32000;
-  const channels = data.extra_info?.audio_channel || 1;
-  const bytesPerMs = sr * channels * 2 / 1000; // 16-bit PCM
+  const fullWav = hexToBytes(data.data?.audio || '');
+  // 解析 WAV 头部参数
+  const dv = new DataView(fullWav.buffer, fullWav.byteOffset, fullWav.byteLength);
+  let _off = 12, pcmOff = 0, pcmSize = 0, wavSr = 32000, wavCh = 1, wavBits = 16;
+  while (_off < fullWav.length - 8) {
+    const ck = String.fromCharCode(dv.getUint8(_off),dv.getUint8(_off+1),dv.getUint8(_off+2),dv.getUint8(_off+3));
+    const sz = dv.getUint32(_off+4, true);
+    if (ck === 'fmt ') { wavCh = dv.getUint16(_off+10, true); wavSr = dv.getUint32(_off+12, true); wavBits = dv.getUint16(_off+22, true) || 16; }
+    else if (ck === 'data') { pcmOff = _off + 8; pcmSize = sz; }
+    _off += 8 + sz;
+  }
+  const bytesPerMs = wavSr * wavCh * (wavBits / 8) / 1000;
 
   // 2. 下载字幕
   let subtitle = null;
@@ -113,7 +119,7 @@ async function preprocessTts(env, body) {
     subtitle = await subResp.json();
   }
 
-  // 3. 构建字符→时间映射
+  // 3. 字符→时间映射
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
@@ -121,135 +127,57 @@ async function preprocessTts(env, body) {
     if (!twords.length) continue;
     const totalChars = (item.text_end || 0) - (item.text_begin || 0);
     const totalTime = (item.time_end || 0) - (item.time_begin || 0);
-    const sBegin = item.text_begin || 0;
     if (totalChars <= 0 || totalTime <= 0) continue;
-
+    const sBegin = item.text_begin || 0;
     for (const w of twords) {
-      const wBegin = w.word_begin - sBegin;
-      const wEnd = w.word_end - sBegin;
-      for (let ci = wBegin; ci < wEnd; ci++) {
-        const ratioS = ci / totalChars;
-        const ratioE = (ci + 1) / totalChars;
-        charTime[sBegin + ci] = {
-          startMs: item.time_begin + ratioS * totalTime,
-          endMs: item.time_begin + ratioE * totalTime,
-        };
+      for (let ci = w.word_begin - sBegin; ci < w.word_end - sBegin; ci++) {
+        const r = ci / totalChars;
+        charTime[sBegin + ci] = { startMs: item.time_begin + r * totalTime, endMs: item.time_begin + ((ci + 1) / totalChars) * totalTime };
       }
     }
   }
 
-  // 3.5 填补 charTime 空洞（线性插值）
-  if (charTime.length > 0) {
-    const known = [];
-    for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
-    for (let k = 0; k < known.length - 1; k++) {
-      const a = known[k], b = known[k + 1];
-      if (b - a <= 1) continue;
-      const msA = charTime[a].startMs, msB = charTime[b].startMs;
-      const total = msB - msA, steps = b - a;
-      for (let j = a + 1; j < b; j++) {
-        const t = (j - a) / steps;
-        charTime[j] = {
-          startMs: msA + t * total,
-          endMs: msA + ((j - a + 1) / steps) * total,
-        };
-      }
-    }
+  // 3.5 填补空洞
+  const known = [];
+  for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
+  for (let k = 0; k < known.length - 1; k++) {
+    const a = known[k], b = known[k + 1];
+    if (b - a <= 1) continue;
+    const total = charTime[b].startMs - charTime[a].startMs, steps = b - a;
+    for (let j = a + 1; j < b; j++)
+      charTime[j] = { startMs: charTime[a].startMs + ((j - a) / steps) * total, endMs: charTime[a].startMs + ((j - a + 1) / steps) * total };
   }
 
-  // 4. 按前端分词位置切片（PCM直切，无WAV头）
+  // 4. 切片 + 保留原始 WAV 头部
   const words = [];
+  const wavHdr = fullWav.slice(0, pcmOff);
   for (const [wtext, pos] of Object.entries(wordPos)) {
-    const [cStart, cEnd] = pos;
     let startMs = null, endMs = null;
-    for (let ci = cStart; ci < cEnd; ci++) {
+    for (let ci = pos[0]; ci < pos[1]; ci++) {
       const ct = charTime[ci];
       if (ct) {
         if (startMs === null || ct.startMs < startMs) startMs = ct.startMs;
         if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
       }
     }
-    if (startMs !== null && endMs !== null && endMs > startMs) {
-      const startByte = Math.floor(startMs * bytesPerMs);
-      const endByte = Math.ceil(endMs * bytesPerMs);
-      if (startByte < fullAudio.length) {
-        const pcm = fullAudio.slice(startByte, Math.min(endByte, fullAudio.length));
-        if (pcm.length >= 100) {
-          words.push({ text: wtext, pcm_hex: bytesToHex(pcm), sr, ch: channels, bits: 16 });
-        }
-      }
-    }
-  }
-  return words;
-
-  // 4. 构建字符→时间映射
-  const charTime = [];
-  const items = Array.isArray(subtitle) ? subtitle : [];
-  for (const item of items) {
-    const twords = item.timestamped_words || [];
-    if (!twords.length) continue;
-    const totalChars = (item.text_end || 0) - (item.text_begin || 0);
-    const totalTime = (item.time_end || 0) - (item.time_begin || 0);
-    const sBegin = item.text_begin || 0;
-    if (totalChars <= 0 || totalTime <= 0) continue;
-
-    for (const w of twords) {
-      const wBegin = w.word_begin - sBegin;
-      const wEnd = w.word_end - sBegin;
-      for (let ci = wBegin; ci < wEnd; ci++) {
-        const ratioS = ci / totalChars;
-        const ratioE = (ci + 1) / totalChars;
-        charTime[sBegin + ci] = {
-          startMs: item.time_begin + ratioS * totalTime,
-          endMs: item.time_begin + ratioE * totalTime,
-        };
-      }
-    }
-  }
-
-  // 4.5 填补 charTime 空洞（线性插值）
-  if (charTime.length > 0) {
-    const known = [];
-    for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
-    for (let k = 0; k < known.length - 1; k++) {
-      const a = known[k], b = known[k + 1];
-      if (b - a <= 1) continue;
-      const msA = charTime[a].startMs, msB = charTime[b].startMs;
-      const total = msB - msA, steps = b - a;
-      for (let j = a + 1; j < b; j++) {
-        const t = (j - a) / steps;
-        charTime[j] = {
-          startMs: msA + t * total,
-          endMs: msA + ((j - a + 1) / steps) * total,
-        };
-      }
-    }
-  }
-
-  // 5. 按前端分词位置切片
-  const words = [];
-  for (const [wtext, pos] of Object.entries(wordPos)) {
-    const [cStart, cEnd] = pos;
-    let startMs = null, endMs = null;
-    for (let ci = cStart; ci < cEnd; ci++) {
-      const ct = charTime[ci];
-      if (ct) {
-        if (startMs === null || ct.startMs < startMs) startMs = ct.startMs;
-        if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
-      }
-    }
-    if (startMs !== null && endMs !== null && endMs > startMs) {
-      const startByte = Math.floor(startMs * bytesPerMs);
-      const endByte = Math.ceil(endMs * bytesPerMs);
-      if (startByte < wavInfo.dataSize) {
-        const samples = fullAudio.slice(dataOff + startByte, dataOff + Math.min(endByte, wavInfo.dataSize));
-        if (samples.length < 100) continue;
-        words.push({ text: wtext, audio_hex: bytesToHex(samples), pcm: true, sr: wavInfo.sampleRate, ch: wavInfo.channels, bits: wavInfo.bits });
-      }
-    }
+    if (startMs === null || endMs === null || endMs <= startMs) continue;
+    // trim 5ms 边缘减少串音
+    const sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
+    const eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
+    if (sb >= pcmSize) continue;
+    const pcm = fullWav.slice(pcmOff + sb, pcmOff + Math.min(eb, pcmSize));
+    if (pcm.length < 100) continue;
+    const out = new Uint8Array(wavHdr.length + pcm.length);
+    out.set(wavHdr, 0);
+    const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    outDv.setUint32(4, out.length - 8, true);
+    outDv.setUint32(pcmOff - 4, pcm.length, true);
+    out.set(pcm, wavHdr.length);
+    words.push({ text: wtext, audio_hex: bytesToHex(out) });
   }
   return words;
 }
+
 
 export default {
   async fetch(request, env) {
