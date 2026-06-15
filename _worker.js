@@ -149,19 +149,29 @@ async function preprocessTts(env, body) {
   const bytesPerMs = wavInfo.sampleRate * wavInfo.channels * sampleBytes / 1000;
   const header = fullAudio.slice(0, 44);
 
-  // 4. 切分每句
+  // 4. 切分每句（按字符位置比例估算时间）
   const words = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
-    const wordItems = item.words || [item];
-    for (const w of wordItems) {
-      if (!w.text || w.start == null || w.end == null) continue;
-      const startByte = Math.floor(w.start * bytesPerMs);
-      const endByte = Math.ceil(w.end * bytesPerMs);
+    const twords = item.timestamped_words || [];
+    if (!twords.length) continue;
+    const totalChars = (item.text_end || 0) - (item.text_begin || 0);
+    const totalTime = (item.time_end || 0) - (item.time_begin || 0);
+    if (totalChars <= 0 || totalTime <= 0) continue;
+
+    for (const w of twords) {
+      const txt = w.word || w.text;
+      if (!txt) continue;
+      const ratioS = (w.word_begin - item.text_begin) / totalChars;
+      const ratioE = (w.word_end - item.text_begin) / totalChars;
+      const startMs = item.time_begin + ratioS * totalTime;
+      const endMs = item.time_begin + ratioE * totalTime;
+      const startByte = Math.floor(startMs * bytesPerMs);
+      const endByte = Math.ceil(endMs * bytesPerMs);
       if (startByte >= wavInfo.dataSize) continue;
       const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
       const wav = buildWav(header, samples);
-      words.push({ text: w.text, audio_hex: bytesToHex(wav) });
+      words.push({ text: txt, audio_hex: bytesToHex(wav) });
     }
   }
   return words;
