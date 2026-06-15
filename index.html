@@ -106,7 +106,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
     </div>
     <div class="controls-row">
       <label>🎤 <select id="voiceSelect" title="选择语音引擎"><option value="">加载中...</option></select></label>
-      <label id="mxVoiceWrap" style="display:none" title="MiniMax在线语音（粤语发音更准）">☁️ <select id="mxVoiceSelect"></select></label>
       <label>🔊 <div class="range-wrap">
         <input type="range" id="volumeRange" min="0" max="2.0" step="0.05" value="1.0">
         <span class="rv" id="volumeLabel">1.0</span>
@@ -117,6 +116,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
       </div></label>
       <label style="cursor:pointer;user-select:none"><input type="checkbox" id="jpToggle"> 粤拼</label>
       <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
+      <label id="onlineTtsWrap" style="cursor:pointer;user-select:none" title="开启后使用在线高精度粤语发音"><input type="checkbox" id="onlineTtsToggle"> 在线TTS</label>
+      <label id="mxVoiceWrap" style="display:none" title="MiniMax在线语音">☁️ <select id="mxVoiceSelect"></select></label>
     </div>
     <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
       <span id="preprocessWarn" style="font-size:.75rem;color:#e67e22;margin-right:8px">💡 建议预处理</span>
@@ -493,7 +494,7 @@ function stopSpeak() {
 }
 
 // ── MiniMax 在线 TTS + IndexedDB 缓存 ──
-let minimaxConfigured = false;
+let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let minimaxVoice = localStorage.getItem('mxVoice') || 'male-qn-qingse';
 let currentAudio = null;
 
@@ -514,14 +515,41 @@ function initMxVoice() {
     if (v.id === minimaxVoice) o.selected = true;
     mxVoiceSelect.appendChild(o);
   }
-  mxVoiceWrap.style.display = '';
-  minimaxConfigured = true;
-  preprocessRow.style.display = '';
-  updateCacheStat();
 }
+initMxVoice();
 mxVoiceSelect.addEventListener('change', () => {
   minimaxVoice = mxVoiceSelect.value;
   localStorage.setItem('mxVoice', minimaxVoice);
+});
+
+const onlineTtsToggle = document.getElementById('onlineTtsToggle');
+onlineTtsToggle.checked = onlineTtsEnabled;
+if (onlineTtsEnabled) {
+  mxVoiceWrap.style.display = '';
+  document.getElementById('preprocessRow').style.display = '';
+  document.getElementById('preprocessBtn').style.display = '';
+  updateCacheStat();
+} else {
+  mxVoiceWrap.style.display = 'none';
+  document.getElementById('preprocessRow').style.display = 'none';
+  document.getElementById('preprocessBtn').style.display = 'none';
+}
+
+onlineTtsToggle.addEventListener('change', () => {
+  onlineTtsEnabled = onlineTtsToggle.checked;
+  localStorage.setItem('onlineTts', onlineTtsEnabled ? '1' : '0');
+  if (onlineTtsEnabled) {
+    mxVoiceWrap.style.display = '';
+    document.getElementById('preprocessRow').style.display = '';
+    document.getElementById('preprocessBtn').style.display = '';
+    initMxVoice(); updateCacheStat();
+    statusBar.textContent = '☁️ 在线TTS模式';
+  } else {
+    mxVoiceWrap.style.display = 'none';
+    document.getElementById('preprocessRow').style.display = 'none';
+    document.getElementById('preprocessBtn').style.display = 'none';
+    statusBar.textContent = '🔊 系统TTS模式';
+  }
 });
 
 // IndexedDB TTS 缓存
@@ -621,24 +649,27 @@ async function playAudioBlob(blob, rate) {
 }
 
 async function speakOneCached(text, rate) {
+  if (!onlineTtsEnabled) {
+    const voice = await resolveVoice();
+    if (!voice) return false;
+    return speakOne(text, rate, 1, voice, 0, 1);
+  }
   const cached = await ttsCache.get(text);
   if (cached) {
     statusBar.textContent = `🔊: "${text}" (缓存)`;
     return playAudioBlob(cached, rate);
   }
-  if (minimaxConfigured) {
-    try {
-      const blob = await fetchTtsFromMiniMax(text);
-      await ttsCache.set(text, blob);
-      statusBar.textContent = `🔊: "${text}" (在线)`;
-      return playAudioBlob(blob, rate);
-    } catch (e) {
-      statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
-    }
+  try {
+    const blob = await fetchTtsFromMiniMax(text);
+    await ttsCache.set(text, blob);
+    statusBar.textContent = `🔊: "${text}" (在线)`;
+    return playAudioBlob(blob, rate);
+  } catch (e) {
+    statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
+    const voice = await resolveVoice();
+    if (!voice) return false;
+    return speakOne(text, rate, 1, voice, 0, 1);
   }
-  const voice = await resolveVoice();
-  if (!voice) return false;
-  return speakOne(text, rate, 1, voice, 0, 1);
 }
 
 // ── 预处理 ──
@@ -665,7 +696,7 @@ const preprocessStat = document.getElementById('preprocessStat');
 const cacheCountEl = document.getElementById('cacheCount');
 
 async function updateCacheStat() {
-  if (!minimaxConfigured) return;
+  if (!onlineTtsEnabled) return;
   const n = await ttsCache.count();
   cacheCountEl.textContent = n;
   preprocessStat.title = `缓存 ${n} 个词 (上限${MAX_CACHE_ENTRIES})`;
@@ -717,25 +748,12 @@ document.getElementById('clearCacheBtn').addEventListener('click', async (e) => 
 
 // 页面加载时初始化缓存
 (async function initCache() {
-  try {
-    await ttsCache.open();
-    const resp = await fetch('/tts', { method: 'HEAD' });
-    if (resp.ok) { initMxVoice(); }
-  } catch {}
+  try { await ttsCache.open(); } catch {}
+  if (onlineTtsEnabled) setTimeout(updateCacheStat, 500);
 })();
 
 // 定时更新缓存计数
-setInterval(updateCacheStat, 10000);
-
-// 初始检测 MiniMax 可用性（延迟 2s，等 Worker 响应）
-setTimeout(async () => {
-  if (!minimaxConfigured) {
-    try {
-      const resp = await fetch('/tts', { method: 'HEAD' });
-      if (resp.ok) initMxVoice();
-    } catch {}
-  }
-}, 2000);
+setInterval(() => { if (onlineTtsEnabled) updateCacheStat(); }, 10000);
 volumeRange.addEventListener('input', () => {
   volumeLabel.textContent = parseFloat(volumeRange.value).toFixed(1);
 });
