@@ -675,24 +675,7 @@ async function speakOneCached(text, rate) {
     return speakOne(text, rate, 1, voice, 0, 1);
   }
   if (cacheAvailable) {
-    let cached = await ttsCache.get(text);
-    // 单字缓存未命中，尝试找包含它的多字词
-    if (!cached && text.length === 1 && ttsCache.db) {
-      try {
-        const store = await ttsCache._tx('readonly');
-        const req = store.openCursor();
-        await new Promise(resolve => {
-          req.onsuccess = (e) => {
-            const c = e.target.result;
-            if (c) {
-              if (c.value.k.startsWith(text) || c.value.k.includes(text)) {
-                cached = c.value.d; resolve();
-              } else c.continue();
-            } else resolve();
-          };
-        });
-      } catch {}
-    }
+    const cached = await ttsCache.get(text);
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
       const ok = await playAudioBlob(cached, rate);
@@ -763,32 +746,17 @@ preprocessBtn.addEventListener('click', async () => {
     }
     const { words } = await resp.json();
     let cached = 0;
-    const mxBlobs = {}; // MiniMax word → blob
     for (const w of words) {
       if (w.audio_hex && cacheAvailable) {
         const buf = new Uint8Array(w.audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
         const blob = new Blob([buf], { type: 'audio/wav' });
         await ttsCache.set(w.text, blob);
-        mxBlobs[w.text] = blob;
         cached++;
       }
       preprocessFill.style.width = ((cached / words.length) * 100) + '%';
     }
-    // 对齐前端分词：未缓存的词，用包含它的 MiniMax 词音频代替
-    const ourWords = extractUnique(text);
-    for (const w of ourWords) {
-      if (mxBlobs[w]) continue;
-      if (cacheAvailable && ttsCache.db) {
-        if (await ttsCache.has(w)) continue;
-        for (const mx of Object.keys(mxBlobs)) {
-          if (mx.startsWith(w) || mx.includes(w)) {
-            await ttsCache.set(w, mxBlobs[mx]);
-            cached++; break;
-          }
-        }
-      }
-    }
-    statusBar.textContent = `✅ 已缓存 ${cached}/${ourWords.length} 个词`;
+    statusBar.textContent = `✅ 已缓存 ${cached}/${words.length} 个词`;
+    showToast(`完成: ${cached} 词`);
     showToast(`完成: ${cached} 词`);
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
