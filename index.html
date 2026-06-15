@@ -742,7 +742,18 @@ preprocessBtn.addEventListener('click', async () => {
       const blob = await fetchTtsFromMiniMax(w);
       if (cacheAvailable) { const stored = await ttsCache.set(w, blob); if (!stored) console.warn('缓存写入失败:', w); }
       ok++;
-    } catch (e) { console.warn('预处理请求失败:', w, e.message); }
+      await new Promise(r => setTimeout(r, 250));
+    } catch (e) {
+      console.warn('预处理请求失败:', w, e.message);
+      if (e.message.includes('rate limit')) {
+        await new Promise(r => setTimeout(r, 1500));
+        try {
+          const blob = await fetchTtsFromMiniMax(w);
+          if (cacheAvailable) { await ttsCache.set(w, blob); }
+          ok++;
+        } catch {}
+      }
+    }
     done++;
     preprocessFill.style.width = ((done / total) * 100) + '%';
   }
