@@ -564,8 +564,9 @@ class TtsCache {
     return new Promise((resolve, reject) => {
       const r = indexedDB.open(CACHE_DB, 1);
       r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('a')) r.result.createObjectStore('a'); };
-      r.onsuccess = () => { this.db = r.result; resolve(); };
-      r.onerror = () => { console.warn('IndexedDB failed, cache disabled'); reject(r.error); };
+      r.onsuccess = () => { this.db = r.result; console.log('IndexedDB opened'); resolve(); };
+      r.onerror = () => { console.error('IndexedDB open failed:', r.error); reject(r.error); };
+      r.onblocked = () => { console.error('IndexedDB blocked'); reject(new Error('blocked')); };
     });
   }
   async _tx(mode) { if (!this.db) throw new Error('not open'); return this.db.transaction(['a'], mode).objectStore('a'); }
@@ -577,7 +578,7 @@ class TtsCache {
     } catch { return null; }
   }
   async set(key, blob) {
-    if (!this.db) return;
+    if (!this.db) { console.warn('TtsCache no db, skip', key.slice(0,6)); return false; }
     try {
       const store = await this._tx('readwrite');
       await new Promise((resolve, reject) => {
@@ -586,7 +587,12 @@ class TtsCache {
         r.onerror = () => reject(r.error);
       });
       this._count++;
-    } catch { await this.evict(); try { const store = await this._tx('readwrite'); store.put({ k: key, d: blob, t: Date.now() }); } catch {} }
+      return true;
+    } catch (e) {
+      console.error('TtsCache set error:', e.message);
+      try { await this.evict(); const store = await this._tx('readwrite'); store.put({ k: key, d: blob, t: Date.now() }); return true; } catch {}
+      return false;
+    }
   }
   async has(key) {
     if (!this.db) return false;
@@ -654,14 +660,16 @@ async function speakOneCached(text, rate) {
     if (!voice) return false;
     return speakOne(text, rate, 1, voice, 0, 1);
   }
-  const cached = await ttsCache.get(text);
-  if (cached) {
-    statusBar.textContent = `🔊: "${text}" (缓存)`;
-    return playAudioBlob(cached, rate);
+  if (cacheAvailable) {
+    const cached = await ttsCache.get(text);
+    if (cached) {
+      statusBar.textContent = `🔊: "${text}" (缓存)`;
+      return playAudioBlob(cached, rate);
+    }
   }
   try {
     const blob = await fetchTtsFromMiniMax(text);
-    await ttsCache.set(text, blob);
+    if (cacheAvailable) await ttsCache.set(text, blob);
     statusBar.textContent = `🔊: "${text}" (在线)`;
     return playAudioBlob(blob, rate);
   } catch (e) {
@@ -697,6 +705,7 @@ const cacheCountEl = document.getElementById('cacheCount');
 
 async function updateCacheStat() {
   if (!onlineTtsEnabled) return;
+  if (!cacheAvailable) { cacheCountEl.textContent = '不可用'; return; }
   const n = await ttsCache.count();
   cacheCountEl.textContent = n;
   preprocessStat.title = `缓存 ${n} 个词 (上限${MAX_CACHE_ENTRIES})`;
@@ -710,10 +719,11 @@ preprocessBtn.addEventListener('click', async () => {
   if (!unique.length) { showToast('无可处理内容'); return; }
   const missing = [];
   for (const w of unique) {
-    if (!(await ttsCache.has(w))) missing.push(w);
+    if (!cacheAvailable || !(await ttsCache.has(w))) missing.push(w);
   }
   if (!missing.length) { statusBar.textContent = '✅ 全部已缓存'; updateCacheStat(); return; }
 
+  if (!cacheAvailable) showToast('⚠ 浏览器不支持本地缓存，仍会调用在线TTS');
   preprocessing = true;
   preprocessBar.style.display = '';
   preprocessFill.style.width = '0%';
@@ -724,7 +734,7 @@ preprocessBtn.addEventListener('click', async () => {
     statusBar.textContent = `⚡ 预处理 (${done+1}/${total}): ${w}`;
     try {
       const blob = await fetchTtsFromMiniMax(w);
-      await ttsCache.set(w, blob);
+      if (cacheAvailable) await ttsCache.set(w, blob);
     } catch (e) { console.warn('预处理失败:', w, e); }
     done++;
     preprocessFill.style.width = ((done / total) * 100) + '%';
@@ -746,9 +756,16 @@ document.getElementById('clearCacheBtn').addEventListener('click', async () => {
 });
 
 // 页面加载时初始化缓存
+let cacheAvailable = false;
 (async function initCache() {
-  try { await ttsCache.open(); } catch {}
-  if (onlineTtsEnabled) setTimeout(updateCacheStat, 500);
+  try {
+    await ttsCache.open();
+    cacheAvailable = true;
+    if (onlineTtsEnabled) setTimeout(updateCacheStat, 500);
+  } catch {
+    cacheAvailable = false;
+    cacheCountEl.textContent = '0';
+  }
 })();
 
 // 定时更新缓存计数
