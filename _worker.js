@@ -168,10 +168,27 @@ async function preprocessTts(env, body) {
       const endMs = item.time_begin + ratioE * totalTime;
       const startByte = Math.floor(startMs * bytesPerMs);
       const endByte = Math.ceil(endMs * bytesPerMs);
-      if (startByte >= wavInfo.dataSize) continue;
-      const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
-      const wav = buildWav(header, samples);
-      words.push({ text: txt, audio_hex: bytesToHex(wav) });
+      if (startByte < wavInfo.dataSize) {
+        const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
+        const wav = buildWav(header, samples);
+        words.push({ text: txt, audio_hex: bytesToHex(wav) });
+      }
+      // 多字词也拆成单字缓存
+      if (txt.length > 1) {
+        const charTime = totalTime / totalChars;
+        for (let ci = 0; ci < txt.length; ci++) {
+          const ch = txt[ci];
+          const csMs = item.time_begin + ((w.word_begin - item.text_begin + ci) / totalChars) * totalTime;
+          const ceMs = csMs + charTime;
+          const csByte = Math.floor(csMs * bytesPerMs);
+          const ceByte = Math.ceil(ceMs * bytesPerMs);
+          if (csByte < wavInfo.dataSize) {
+            const chSamples = fullAudio.slice(44 + csByte, 44 + Math.min(ceByte, wavInfo.dataSize));
+            const chWav = buildWav(header, chSamples);
+            words.push({ text: ch, audio_hex: bytesToHex(chWav) });
+          }
+        }
+      }
     }
   }
   return words;
