@@ -62,14 +62,15 @@ async function minimaxTts(env, body) {
   if (!apiKey || !groupId) {
     return new Response(JSON.stringify({error:'MiniMax not configured'}), {status:500,headers:{'Content-Type':'application/json'}});
   }
-  const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
+  const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
     method: 'POST',
     headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
     body: JSON.stringify({
       model: 'speech-2.8-hd',
       text: body.text,
       stream: false,
-      voice_setting: {voice_id: body.voice||'male-qn-qingse', speed: body.speed||1.0, vol:1.0, pitch:0},
+      language_boost: 'Chinese,Yue',
+      voice_setting: {voice_id: body.voice||'Cantonese_GentleLady', speed: body.speed||1.0, vol:1.0, pitch:0},
       audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
       subtitle_enable: false,
     }),
@@ -138,17 +139,18 @@ export default {
       if (!apiKey || !groupId) {
         return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
-      const voices = ['male-qn-qingse', 'presenter_male', 'female-shaonv', 'presenter_female'];
+      const voices = ['Cantonese_GentleLady', 'Cantonese_podacast_host_1'];
       for (const vid of voices) {
         try {
           const start = Date.now();
-          const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
+          const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
             method: 'POST',
             headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
             body: JSON.stringify({
               model: 'speech-2.8-hd',
               text: '你好',
               stream: false,
+              language_boost: 'Chinese,Yue',
               voice_setting: {voice_id: vid, speed:1, vol:1, pitch:0},
               audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
               subtitle_enable: false,

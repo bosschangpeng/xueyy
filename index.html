@@ -497,14 +497,12 @@ function stopSpeak() {
 // ── MiniMax 在线 TTS + IndexedDB 缓存 ──
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
-let minimaxVoice = localStorage.getItem('mxVoice') || 'male-qn-qingse';
+let minimaxVoice = localStorage.getItem('mxVoice') || 'Cantonese_GentleLady';
 let currentAudio = null;
 
 const MX_VOICES = [
-  { id: 'male-qn-qingse', label: '青涩男声 ♂' },
-  { id: 'presenter_male', label: '男主播 ♂' },
-  { id: 'female-shaonv', label: '少女 ♀' },
-  { id: 'presenter_female', label: '女主播 ♀' },
+  { id: 'Cantonese_GentleLady', label: '粤语女声 ♀' },
+  { id: 'Cantonese_podacast_host_1', label: '粤语播客 ♂' },
 ];
 
 const mxVoiceSelect = document.getElementById('mxVoiceSelect');
