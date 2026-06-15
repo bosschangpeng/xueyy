@@ -654,7 +654,7 @@ async function fetchTtsFromMiniMax(text) {
 }
 
 async function playAudioBlob(blob, rate) {
-  if (!blob || blob.size < 100) return false;
+  if (!blob || blob.size < 100) { console.warn('playAudioBlob: bad blob', blob?.size); return false; }
   const url = URL.createObjectURL(blob);
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   const a = new Audio(url);
@@ -663,8 +663,8 @@ async function playAudioBlob(blob, rate) {
   currentAudio = a;
   return new Promise(resolve => {
     a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
+    a.onerror = (e) => { console.warn('audio onerror:', a.error?.message || 'unknown', a.src?.slice(0,50)); currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
+    a.play().catch(e => { console.warn('audio play() catch:', e.message); currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
   });
 }
 
