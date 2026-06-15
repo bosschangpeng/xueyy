@@ -736,26 +736,27 @@ preprocessBtn.addEventListener('click', async () => {
   preprocessBtn.disabled = true;
 
   let done = 0, ok = 0, total = missing.length;
-  for (const w of missing) {
-    statusBar.textContent = `⚡ 预处理 (${done+1}/${total}): ${w}`;
-    try {
-      const blob = await fetchTtsFromMiniMax(w);
-      if (cacheAvailable) { const stored = await ttsCache.set(w, blob); if (!stored) console.warn('缓存写入失败:', w); }
-      ok++;
-      await new Promise(r => setTimeout(r, 250));
-    } catch (e) {
-      console.warn('预处理请求失败:', w, e.message);
-      if (e.message.includes('rate limit')) {
-        await new Promise(r => setTimeout(r, 1500));
+  const BATCH = 5, BATCH_SLEEP = 400;
+  for (let i = 0; i < missing.length; i += BATCH) {
+    const batch = missing.slice(i, i + BATCH);
+    const tasks = batch.map(async (w) => {
+      let tried = 0;
+      while (tried < 2) {
         try {
           const blob = await fetchTtsFromMiniMax(w);
-          if (cacheAvailable) { await ttsCache.set(w, blob); }
-          ok++;
-        } catch {}
+          if (cacheAvailable) await ttsCache.set(w, blob);
+          ok++; break;
+        } catch (e) {
+          console.warn('预处理失败:', w, e.message);
+          if (e.message.includes('rate limit') && tried === 0) { await new Promise(r => setTimeout(r, 2000)); tried++; continue; }
+          break;
+        }
       }
-    }
-    done++;
-    preprocessFill.style.width = ((done / total) * 100) + '%';
+      done++;
+      preprocessFill.style.width = ((done / total) * 100) + '%';
+    });
+    await Promise.all(tasks);
+    if (i + BATCH < missing.length) await new Promise(r => setTimeout(r, BATCH_SLEEP));
   }
 
   preprocessing = false;
