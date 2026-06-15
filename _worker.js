@@ -98,11 +98,12 @@ async function preprocessTts(env, body) {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
-  // 解析 WAV 头部（只读参数，不转 hex）
-  const fullWav = hexToBytes(data.data?.audio || '');
-  const dv = new DataView(fullWav.buffer, fullWav.byteOffset, fullWav.byteLength);
+  // 解析 WAV 头部（只解码前 500 hex 字符，够读头部参数）
+  const hex = data.data?.audio || '';
+  const headerBytes = hexToBytes(hex.slice(0, 500));
+  const dv = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
   let _off = 12, pcmOff = 0, pcmSize = 0, wavSr = 32000, wavCh = 1, wavBits = 16;
-  while (_off < fullWav.length - 8) {
+  while (_off < headerBytes.length - 8) {
     const ck = String.fromCharCode(dv.getUint8(_off),dv.getUint8(_off+1),dv.getUint8(_off+2),dv.getUint8(_off+3));
     const sz = dv.getUint32(_off+4, true);
     if (ck === 'fmt ') { wavCh = dv.getUint16(_off+10, true); wavSr = dv.getUint32(_off+12, true); wavBits = dv.getUint16(_off+22, true) || 16; }
@@ -144,7 +145,7 @@ async function preprocessTts(env, body) {
       charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
   }
 
-  return { char_time: charTime, word_pos: wordPos, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text };
+  return { char_time: charTime, word_pos: wordPos, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text, audio_hex: hex };
 }
 
 

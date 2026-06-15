@@ -761,22 +761,16 @@ preprocessBtn.addEventListener('click', async () => {
       throw new Error(msg);
     }
     const preData = await resp.json();
-    if (!preData.char_time || !preData.word_pos) { statusBar.textContent = '❌ 预处理数据无效'; return; }
+    if (!preData.char_time || !preData.word_pos || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
     const dataOff = preData.data_off || 44;
     if (dataOff < 4) { statusBar.textContent = '❌ WAV 解析失败'; return; }
 
-    statusBar.textContent = '⚡ 下载音频...';
-    const audioResp = await fetch('/tts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: preData.text, voice: minimaxVoice }),
-    });
-    if (!audioResp.ok) throw new Error('音频下载失败');
-    const audioBlob = await audioResp.blob();
-
     statusBar.textContent = '⚡ 解码音频...';
+    const hex = preData.audio_hex;
+    const fullWav = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') await ctx.resume();
-    const audioBuf = await ctx.decodeAudioData(await audioBlob.arrayBuffer());
+    const audioBuf = await ctx.decodeAudioData(fullWav.buffer);
     const ch = Math.min(audioBuf.numberOfChannels, preData.ch || 1);
     const sr = audioBuf.sampleRate;
     const bytesPerMs = sr * ch * 2 / 1000;
