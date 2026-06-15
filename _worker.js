@@ -56,11 +56,11 @@ async function checkAuth(request, env) {
   return val === '1';
 }
 
-async function minimaxTts(env, body) {
+async function minimaxTts(env, body, opts = {}) {
   const apiKey = env.MINIMAX_API_KEY || '';
   const groupId = env.MINIMAX_GROUP_ID || '';
   if (!apiKey || !groupId) {
-    return new Response(JSON.stringify({error:'MiniMax not configured'}), {status:500,headers:{'Content-Type':'application/json'}});
+    throw new Error('MiniMax not configured');
   }
   const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
     method: 'POST',
@@ -71,22 +71,100 @@ async function minimaxTts(env, body) {
       stream: false,
       language_boost: 'Chinese,Yue',
       voice_setting: {voice_id: body.voice||'Cantonese_GentleLady', speed: body.speed||1.0, vol:1.0, pitch:0},
-      audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
-      subtitle_enable: false,
+      audio_setting: {sample_rate:32000, bitrate:128000, format: opts.format||'mp3', channel:1},
+      subtitle_enable: opts.subtitle_enable || false,
+      subtitle_type: opts.subtitle_type,
     }),
   });
-  if (!resp.ok) {
-    return new Response(JSON.stringify({error:'MiniMax API '+resp.status}), {status:500,headers:{'Content-Type':'application/json'}});
-  }
+  if (!resp.ok) throw new Error('MiniMax API '+resp.status);
   const data = await resp.json();
-  if (data.base_resp?.status_code !== 0) {
-    return new Response(JSON.stringify({error:data.base_resp?.status_msg||'TTS error'}), {status:500,headers:{'Content-Type':'application/json'}});
+  if (data.base_resp?.status_code !== 0) throw new Error(data.base_resp?.status_msg||'TTS error');
+  return data;
+}
+
+// ── WAV 切分 ──
+function hexToBytes(hex) {
+  return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function parseWav(buf) {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let offset = 12;
+  let fmtFound = false, dataOffset = 0, dataSize = 0;
+  let sampleRate = 0, channels = 1, bits = 16;
+  while (offset < buf.length - 8) {
+    const ck = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2), view.getUint8(offset+3));
+    const size = view.getUint32(offset+4, true);
+    if (ck === 'fmt ' && !fmtFound) {
+      channels = view.getUint16(offset+10, true);
+      sampleRate = view.getUint32(offset+12, true);
+      bits = view.getUint16(offset+22, true);
+      fmtFound = true;
+    } else if (ck === 'data') {
+      dataOffset = offset + 8;
+      dataSize = size;
+    }
+    offset += 8 + size;
   }
-  const audioHex = data.data?.audio || '';
-  const audioBytes = new Uint8Array(audioHex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-  return new Response(audioBytes, {
-    headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':audioBytes.length.toString()},
+  return { sampleRate, channels, bits, dataOffset, dataSize };
+}
+
+function buildWav(header, samples) {
+  const dataLen = samples.length;
+  const total = 36 + dataLen;
+  const buf = new ArrayBuffer(44 + dataLen);
+  const v = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+  u8.set(new Uint8Array(header.buffer, header.byteOffset, 44), 0);
+  v.setUint32(4, total, true);
+  u8.set(samples, 44);
+  v.setUint32(40, dataLen, true);
+  return u8;
+}
+
+// ── 预处理：整句 TTS → WAV 切分 ──
+async function preprocessTts(env, body) {
+  // 1. 调用 MiniMax，获取带字幕的 WAV
+  const data = await minimaxTts(env, body, {
+    format: 'wav',
+    subtitle_enable: true,
+    subtitle_type: 'word',
   });
+
+  const fullAudio = hexToBytes(data.data?.audio || '');
+
+  // 2. 下载字幕
+  let subtitle = null;
+  if (data.data?.subtitle_file) {
+    const subResp = await fetch(data.data.subtitle_file);
+    subtitle = await subResp.json();
+  }
+
+  // 3. 解析 WAV
+  const wavInfo = parseWav(fullAudio);
+  const sampleBytes = wavInfo.bits / 8;
+  const bytesPerMs = wavInfo.sampleRate * wavInfo.channels * sampleBytes / 1000;
+  const header = fullAudio.slice(0, 44);
+
+  // 4. 切分每句
+  const words = [];
+  const items = Array.isArray(subtitle) ? subtitle : [];
+  for (const item of items) {
+    const wordItems = item.words || [item];
+    for (const w of wordItems) {
+      if (!w.text || w.start == null || w.end == null) continue;
+      const startByte = Math.floor(w.start * bytesPerMs);
+      const endByte = Math.ceil(w.end * bytesPerMs);
+      if (startByte >= wavInfo.dataSize) continue;
+      const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
+      const wav = buildWav(header, samples);
+      words.push({ text: w.text, audio_hex: bytesToHex(wav) });
+    }
+  }
+  return words;
 }
 
 export default {
@@ -129,7 +207,7 @@ export default {
       return new Response(null, { status: 302, headers });
     }
 
-    // 调试端点：测试 Worker → MiniMax 连通性
+    // 调试端点
     if (url.pathname === '/debug-tts') {
       const results = [];
       const apiKey = env.MINIMAX_API_KEY || '';
@@ -168,19 +246,37 @@ export default {
       return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
     }
 
-    // MiniMax TTS 代理
+    // 预处理：整句 TTS → 切词
+    if (url.pathname === '/preprocess' && request.method === 'POST') {
+      if (!(await checkAuth(request, env))) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      try {
+        const words = await preprocessTts(env, await request.json());
+        return new Response(JSON.stringify({ words }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({error:e.message}), {status:500,headers:{'Content-Type':'application/json'}});
+      }
+    }
+
+    // MiniMax TTS 代理（单次请求，不再切分）
     if (url.pathname === '/tts') {
-      // HEAD 检测 MiniMax 是否配置
       if (request.method === 'HEAD') {
         return new Response(null, { status: (env.MINIMAX_API_KEY && env.MINIMAX_GROUP_ID) ? 200 : 500 });
       }
-      // POST 代理到 MiniMax
       if (request.method === 'POST') {
         if (!(await checkAuth(request, env))) {
           return new Response('Unauthorized', { status: 401 });
         }
         try {
-          return await minimaxTts(env, await request.json());
+          const data = await minimaxTts(env, await request.json());
+          const audioHex = data.data?.audio || '';
+          const audioBytes = hexToBytes(audioHex);
+          return new Response(audioBytes, {
+            headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':String(audioBytes.length)},
+          });
         } catch (e) {
           return new Response(JSON.stringify({error:e.message}), {status:500,headers:{'Content-Type':'application/json'}});
         }
@@ -188,7 +284,6 @@ export default {
       return new Response('Method not allowed', { status: 405 });
     }
 
-    // 检查 cookie — 放行页面资源
     if (await checkAuth(request, env)) {
       return env.ASSETS.fetch(request);
     }

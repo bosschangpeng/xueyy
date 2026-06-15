@@ -721,51 +721,46 @@ preprocessBtn.addEventListener('click', async () => {
   if (preprocessing) return;
   const text = inputEl.value.trim();
   if (!text) { showToast('请先输入文本'); return; }
-  const unique = extractUnique(text);
-  if (!unique.length) { showToast('无可处理内容'); return; }
-  const missing = [];
-  for (const w of unique) {
-    if (!cacheAvailable || !(await ttsCache.has(w))) missing.push(w);
-  }
-  if (!missing.length) { statusBar.textContent = '✅ 全部已缓存'; updateCacheStat(); return; }
 
-  if (!cacheAvailable) showToast('⚠ 浏览器不支持本地缓存，仍会调用在线TTS');
   preprocessing = true;
   preprocessBar.style.display = '';
   preprocessFill.style.width = '0%';
   preprocessBtn.disabled = true;
+  statusBar.textContent = '⚡ 预处理中... (一次 API 调用)';
 
-  let done = 0, ok = 0, total = missing.length;
-  const BATCH = 5, BATCH_SLEEP = 400;
-  for (let i = 0; i < missing.length; i += BATCH) {
-    const batch = missing.slice(i, i + BATCH);
-    const tasks = batch.map(async (w) => {
-      let tried = 0;
-      while (tried < 2) {
-        try {
-          const blob = await fetchTtsFromMiniMax(w);
-          if (cacheAvailable) await ttsCache.set(w, blob);
-          ok++; break;
-        } catch (e) {
-          console.warn('预处理失败:', w, e.message);
-          if (e.message.includes('rate limit') && tried === 0) { await new Promise(r => setTimeout(r, 2000)); tried++; continue; }
-          break;
-        }
-      }
-      done++;
-      preprocessFill.style.width = ((done / total) * 100) + '%';
+  try {
+    const resp = await fetch('/preprocess', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: minimaxVoice }),
     });
-    await Promise.all(tasks);
-    if (i + BATCH < missing.length) await new Promise(r => setTimeout(r, BATCH_SLEEP));
+    if (!resp.ok) {
+      let msg = '预处理失败: ' + resp.status;
+      try { const j = await resp.json(); msg = j.error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const { words } = await resp.json();
+    let cached = 0;
+    for (const w of words) {
+      if (w.audio_hex && cacheAvailable) {
+        const buf = new Uint8Array(w.audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+        const blob = new Blob([buf], { type: 'audio/wav' });
+        await ttsCache.set(w.text, blob);
+        cached++;
+      }
+      preprocessFill.style.width = ((cached / words.length) * 100) + '%';
+    }
+    statusBar.textContent = `✅ 已缓存 ${cached}/${words.length} 个词`;
+    showToast(`完成: ${cached} 词`);
+  } catch (e) {
+    statusBar.textContent = '❌ ' + e.message;
+    showToast(e.message);
   }
 
   preprocessing = false;
   preprocessBtn.disabled = false;
   preprocessBar.style.display = 'none';
-  const msg = ok === done ? `✅ 已缓存 ${ok} 个词` : `⚠ 成功 ${ok}/${done}，${done-ok} 失败`;
-  statusBar.textContent = msg;
   updateCacheStat();
-  showToast(msg);
 });
 
 // 清除缓存
