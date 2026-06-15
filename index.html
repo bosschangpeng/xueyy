@@ -773,7 +773,6 @@ preprocessBtn.addEventListener('click', async () => {
     }
     statusBar.textContent = `✅ 已缓存 ${cached}/${words.length} 个词`;
     showToast(`完成: ${cached} 词`);
-    showToast(`完成: ${cached} 词`);
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
     showToast(e.message);
