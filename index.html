@@ -655,17 +655,29 @@ async function fetchTtsFromMiniMax(text) {
 
 async function playAudioBlob(blob, rate) {
   if (!blob || blob.size < 100) { statusBar.textContent = '⚠ 音频数据无效'; return false; }
-  const url = URL.createObjectURL(blob);
-  return new Promise((resolve) => {
-    const a = new Audio(url);
-    a.playbackRate = rate;
-    a.volume = parseFloat(volumeRange.value);
-    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-    currentAudio = a;
-    a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
-  });
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const buf = await blob.arrayBuffer();
+    const audioBuf = await ctx.decodeAudioData(buf);
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.playbackRate.value = rate;
+    const gain = ctx.createGain();
+    gain.gain.value = parseFloat(volumeRange.value);
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch {} }
+    currentAudioSrc = src;
+    return new Promise(resolve => {
+      src.onended = () => { currentAudioSrc = null; resolve(true); };
+      src.start();
+    });
+  } catch (e) {
+    console.warn('Audio decode error:', e);
+    statusBar.textContent = '⚠ 音频解码失败';
+    return false;
+  }
 }
 
 async function speakOneCached(text, rate) {
