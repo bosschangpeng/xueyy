@@ -663,8 +663,8 @@ async function playAudioBlob(blob, rate) {
   currentAudio = a;
   return new Promise(resolve => {
     a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
+    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放失败'; resolve(false); };
+    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放被阻止'; resolve(false); });
   });
 }
 
