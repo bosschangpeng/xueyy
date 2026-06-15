@@ -727,6 +727,22 @@ preprocessBtn.addEventListener('click', async () => {
   const text = inputEl.value.trim();
   if (!text) { showToast('请先输入文本'); return; }
 
+  // 提取前端分词的字符位置
+  const wordPos = {};
+  const sents = splitSentences(text);
+  let globalPos = 0;
+  for (const s of sents) {
+    const segs = segmentText(s);
+    for (const w of segs) {
+      if (w.type === 'punct' || w.type === 'space') { globalPos += w.text.length; continue; }
+      const start = text.indexOf(w.text, globalPos);
+      if (start === -1) { globalPos += w.text.length; continue; }
+      const end = start + w.text.length;
+      if (!wordPos[w.text]) wordPos[w.text] = [start, end];
+      globalPos = end;
+    }
+  }
+
   preprocessing = true;
   preprocessBar.style.display = '';
   preprocessFill.style.width = '0%';
@@ -737,7 +753,7 @@ preprocessBtn.addEventListener('click', async () => {
     const resp = await fetch('/preprocess', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, voice: minimaxVoice }),
+      body: JSON.stringify({ text, words: wordPos, voice: minimaxVoice }),
     });
     if (!resp.ok) {
       let msg = '预处理失败: ' + resp.status;

@@ -125,10 +125,13 @@ function buildWav(header, samples) {
   return u8;
 }
 
-// ── 预处理：整句 TTS → WAV 切分 ──
+// ── 预处理：整句 TTS → 按前端分词切 WAV ──
 async function preprocessTts(env, body) {
-  // 1. 调用 MiniMax，获取带字幕的 WAV
-  const data = await minimaxTts(env, body, {
+  const text = body.text || '';
+  const wordPos = body.words || {}; // { "没": [0,1], "说": [1,2], ... }
+
+  // 1. 调用 MiniMax
+  const data = await minimaxTts(env, { text, voice: body.voice }, {
     format: 'wav',
     subtitle_enable: true,
     subtitle_type: 'word',
@@ -149,29 +152,50 @@ async function preprocessTts(env, body) {
   const bytesPerMs = wavInfo.sampleRate * wavInfo.channels * sampleBytes / 1000;
   const header = fullAudio.slice(0, 44);
 
-  // 4. 切分每句（按字符位置比例估算时间）
-  const words = [];
+  // 4. 构建字符→时间映射
+  const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
     const twords = item.timestamped_words || [];
     if (!twords.length) continue;
     const totalChars = (item.text_end || 0) - (item.text_begin || 0);
     const totalTime = (item.time_end || 0) - (item.time_begin || 0);
+    const sBegin = item.text_begin || 0;
     if (totalChars <= 0 || totalTime <= 0) continue;
 
     for (const w of twords) {
-      const txt = w.word || w.text;
-      if (!txt) continue;
-      const ratioS = (w.word_begin - item.text_begin) / totalChars;
-      const ratioE = (w.word_end - item.text_begin) / totalChars;
-      const startMs = item.time_begin + ratioS * totalTime;
-      const endMs = item.time_begin + ratioE * totalTime;
+      const wBegin = w.word_begin - sBegin;
+      const wEnd = w.word_end - sBegin;
+      for (let ci = wBegin; ci < wEnd; ci++) {
+        const ratioS = ci / totalChars;
+        const ratioE = (ci + 1) / totalChars;
+        charTime[sBegin + ci] = {
+          startMs: item.time_begin + ratioS * totalTime,
+          endMs: item.time_begin + ratioE * totalTime,
+        };
+      }
+    }
+  }
+
+  // 5. 按前端分词位置切片
+  const words = [];
+  for (const [wtext, pos] of Object.entries(wordPos)) {
+    const [cStart, cEnd] = pos;
+    let startMs = null, endMs = null;
+    for (let ci = cStart; ci < cEnd; ci++) {
+      const ct = charTime[ci];
+      if (ct) {
+        if (startMs === null || ct.startMs < startMs) startMs = ct.startMs;
+        if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
+      }
+    }
+    if (startMs !== null && endMs !== null && endMs > startMs) {
       const startByte = Math.floor(startMs * bytesPerMs);
       const endByte = Math.ceil(endMs * bytesPerMs);
       if (startByte < wavInfo.dataSize) {
         const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
         const wav = buildWav(header, samples);
-        words.push({ text: txt, audio_hex: bytesToHex(wav) });
+        words.push({ text: wtext, audio_hex: bytesToHex(wav) });
       }
     }
   }
