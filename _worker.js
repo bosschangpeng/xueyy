@@ -66,10 +66,12 @@ async function minimaxTts(env, body) {
     method: 'POST',
     headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
     body: JSON.stringify({
-      model: 'speech-02',
+      model: 'speech-2.8-hd',
       text: body.text,
+      stream: false,
       voice_setting: {voice_id: body.voice||'male-qn-qingse', speed: body.speed||1.0, vol:1.0, pitch:0},
       audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
+      subtitle_enable: false,
     }),
   });
   if (!resp.ok) {
@@ -136,35 +138,30 @@ export default {
       if (!apiKey || !groupId) {
         return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
-      try {
-        const start = Date.now();
-        const body = JSON.stringify({
-          model: 'speech-02',
-          text: '你好',
-          voice_setting: {voice_id:'male-qn-qingse', speed:1, vol:1, pitch:0},
-          audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
-        });
-        results.push('Body: ' + body.slice(0, 120) + '...');
-        const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
-          method: 'POST',
-          headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
-          body,
-        });
-        const elapsed = Date.now() - start;
-        if (!resp.ok) {
-          results.push('HTTP ' + resp.status + ' (' + elapsed + 'ms)');
-          try { const body = await resp.text(); results.push(body.slice(0, 100)); } catch {}
-        } else {
+      const voices = ['male-qn-qingse', 'presenter_male', 'female-shaonv', 'presenter_female'];
+      for (const vid of voices) {
+        try {
+          const start = Date.now();
+          const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
+            method: 'POST',
+            headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
+            body: JSON.stringify({
+              model: 'speech-2.8-hd',
+              text: '你好',
+              stream: false,
+              voice_setting: {voice_id: vid, speed:1, vol:1, pitch:0},
+              audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
+              subtitle_enable: false,
+            }),
+          });
+          const elapsed = Date.now() - start;
           const data = await resp.json();
-          results.push('HTTP ' + resp.status + ' (' + elapsed + 'ms)');
-          if (data.base_resp?.status_code === 0) {
-            results.push('SUCCESS (audio: ' + (data.data?.audio?.length > 0 ? 'YES' : 'NO') + ')');
-          } else {
-            results.push('MINIMAX: ' + (data.base_resp?.status_msg || 'unknown'));
-          }
+          const ok = resp.ok && data.base_resp?.status_code === 0;
+          results.push(vid + ' → ' + (ok ? 'OK('+elapsed+'ms)' : 'FAIL:'+(data.base_resp?.status_msg||resp.status)));
+          if (ok) break;
+        } catch (e) {
+          results.push(vid + ' → ERR:' + e.message);
         }
-      } catch (e) {
-        results.push('ERROR: ' + e.message);
       }
       return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
     }

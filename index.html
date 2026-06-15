@@ -525,6 +525,12 @@ mxVoiceSelect.addEventListener('change', () => {
 });
 
 const onlineTtsToggle = document.getElementById('onlineTtsToggle');
+const preprocessBtn = document.getElementById('preprocessBtn');
+const preprocessRow = document.getElementById('preprocessRow');
+const preprocessBar = document.getElementById('preprocessBar');
+const preprocessFill = document.getElementById('preprocessFill');
+const preprocessStat = document.getElementById('preprocessStat');
+const cacheCountEl = document.getElementById('cacheCount');
 
 onlineTtsToggle.checked = onlineTtsEnabled;
 onlineTtsToggle.checked = onlineTtsEnabled;
@@ -704,12 +710,6 @@ function extractUnique(text) {
 }
 
 let preprocessing = false;
-const preprocessBtn = document.getElementById('preprocessBtn');
-const preprocessRow = document.getElementById('preprocessRow');
-const preprocessBar = document.getElementById('preprocessBar');
-const preprocessFill = document.getElementById('preprocessFill');
-const preprocessStat = document.getElementById('preprocessStat');
-const cacheCountEl = document.getElementById('cacheCount');
 
 async function updateCacheStat() {
   if (!onlineTtsEnabled) return;
