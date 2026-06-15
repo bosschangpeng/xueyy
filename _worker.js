@@ -95,7 +95,7 @@ async function preprocessTts(env, body) {
   const wordPos = body.words || {};
 
   // 1. 调用 MiniMax
-  const data = await minimaxTts(env, { text, voice: body.voice }, {
+  const data = await minimaxTts(env, { text, voice: body.voice, speed: body.speed || 0.7 }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
