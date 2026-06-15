@@ -590,7 +590,7 @@ class TtsCache {
       return true;
     } catch (e) {
       console.error('TtsCache set error:', e.message);
-      try { await this.evict(); const store = await this._tx('readwrite'); store.put({ k: key, d: blob, t: Date.now() }); return true; } catch {}
+      try { await this.evict(); const store = await this._tx('readwrite'); await new Promise((resolve, reject) => { const r = store.put({ k: key, d: blob, t: Date.now() }); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error); }); return true; } catch {}
       return false;
     }
   }
@@ -729,13 +729,14 @@ preprocessBtn.addEventListener('click', async () => {
   preprocessFill.style.width = '0%';
   preprocessBtn.disabled = true;
 
-  let done = 0, total = missing.length;
+  let done = 0, ok = 0, total = missing.length;
   for (const w of missing) {
     statusBar.textContent = `⚡ 预处理 (${done+1}/${total}): ${w}`;
     try {
       const blob = await fetchTtsFromMiniMax(w);
-      if (cacheAvailable) await ttsCache.set(w, blob);
-    } catch (e) { console.warn('预处理失败:', w, e); }
+      if (cacheAvailable) { const stored = await ttsCache.set(w, blob); if (!stored) console.warn('缓存写入失败:', w); }
+      ok++;
+    } catch (e) { console.warn('预处理请求失败:', w, e.message); }
     done++;
     preprocessFill.style.width = ((done / total) * 100) + '%';
   }
@@ -743,9 +744,10 @@ preprocessBtn.addEventListener('click', async () => {
   preprocessing = false;
   preprocessBtn.disabled = false;
   preprocessBar.style.display = 'none';
-  statusBar.textContent = `✅ 已缓存 ${done} 个词`;
+  const msg = ok === done ? `✅ 已缓存 ${ok} 个词` : `⚠ 成功 ${ok}/${done}，${done-ok} 失败`;
+  statusBar.textContent = msg;
   updateCacheStat();
-  showToast(`处理完成: ${done} 个词`);
+  showToast(msg);
 });
 
 // 清除缓存
