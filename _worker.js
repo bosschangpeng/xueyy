@@ -66,12 +66,10 @@ async function minimaxTts(env, body) {
     method: 'POST',
     headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
     body: JSON.stringify({
-      model: body.model || 'speech-2.8-hd',
+      model: 'speech-02',
       text: body.text,
-      stream: false,
       voice_setting: {voice_id: body.voice||'male-qn-qingse', speed: body.speed||1.0, vol:1.0, pitch:0},
       audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
-      subtitle_enable: false,
     }),
   });
   if (!resp.ok) {
@@ -140,17 +138,17 @@ export default {
       }
       try {
         const start = Date.now();
+        const body = JSON.stringify({
+          model: 'speech-02',
+          text: '你好',
+          voice_setting: {voice_id:'male-qn-qingse', speed:1, vol:1, pitch:0},
+          audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
+        });
+        results.push('Body: ' + body.slice(0, 120) + '...');
         const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
           method: 'POST',
           headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
-          body: JSON.stringify({
-            model: 'speech-2.8-hd',
-            text: '你好',
-            stream: false,
-            voice_setting: {voice_id:'male-qn-qingse', speed:1, vol:1, pitch:0},
-            audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
-            subtitle_enable: false,
-          }),
+          body,
         });
         const elapsed = Date.now() - start;
         if (!resp.ok) {
