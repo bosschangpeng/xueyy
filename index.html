@@ -522,7 +522,7 @@ mxVoiceSelect.addEventListener('change', () => {
 });
 
 // IndexedDB TTS 缓存
-const MAX_CACHE_ENTRIES = 400;
+const MAX_CACHE_ENTRIES = 5000;
 const CACHE_DB = 'yueTts';
 class TtsCache {
   constructor() {
@@ -555,7 +555,6 @@ class TtsCache {
         r.onerror = () => reject(r.error);
       });
       this._count++;
-      if (this._count >= MAX_CACHE_ENTRIES) await this.evict();
     } catch { await this.evict(); try { const store = await this._tx('readwrite'); store.put({ k: key, d: blob, t: Date.now() }); } catch {} }
   }
   async has(key) {
@@ -576,14 +575,16 @@ class TtsCache {
     if (!this.db) return;
     try {
       const all = [];
-      const store = await this._tx('readwrite');
+      const store = await this._tx('readonly');
       await new Promise(resolve => {
-        store.openCursor().onsuccess = (e) => { const c = e.target.result; if (c) { all.push(c.value); c.continue(); } else resolve(); };
+        store.openCursor().onsuccess = (e) => { const c = e.target.result; if (c) { all.push({k:c.value.k, t:c.value.t||0}); c.continue(); } else resolve(); };
       });
       if (all.length <= MAX_CACHE_ENTRIES) return;
-      all.sort((a, b) => (a.t || 0) - (b.t || 0));
-      const toDelete = all.slice(0, all.length - MAX_CACHE_ENTRIES);
-      for (const item of toDelete) store.delete(item.k);
+      all.sort((a, b) => a.t - b.t);
+      const toDelete = all.slice(0, Math.max(all.length - MAX_CACHE_ENTRIES, 200));
+      const writeStore = await this._tx('readwrite');
+      for (const item of toDelete) writeStore.delete(item.k);
+      this._count = all.length - toDelete.length;
     } catch {}
   }
   async clear() {
