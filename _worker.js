@@ -82,7 +82,6 @@ async function minimaxTts(env, body, opts = {}) {
   return data;
 }
 
-// ── WAV 切分 ──
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
 }
@@ -90,58 +89,22 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
-function parseWav(buf) {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  let offset = 12;
-  let fmtFound = false, dataOffset = 0, dataSize = 0;
-  let sampleRate = 0, channels = 1, bits = 16;
-  while (offset < buf.length - 8) {
-    const ck = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2), view.getUint8(offset+3));
-    const size = view.getUint32(offset+4, true);
-    if (ck === 'fmt ' && !fmtFound) {
-      channels = view.getUint16(offset+10, true);
-      sampleRate = view.getUint32(offset+12, true);
-      bits = view.getUint16(offset+22, true);
-      fmtFound = true;
-    } else if (ck === 'data') {
-      dataOffset = offset + 8;
-      dataSize = size;
-    }
-    offset += 8 + size;
-  }
-  return { sampleRate, channels, bits, dataOffset, dataSize };
-}
-
-function buildWav(sampleRate, channels, bits, samples) {
-  const dataLen = samples.length;
-  const byteRate = sampleRate * channels * (bits / 8);
-  const blockAlign = channels * (bits / 8);
-  const buf = new ArrayBuffer(44 + dataLen);
-  const v = new DataView(buf);
-  const w = (s, o) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  w('RIFF', 0); v.setUint32(4, 36 + dataLen, true); w('WAVE', 8);
-  w('fmt ', 12); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
-  v.setUint16(22, channels, true); v.setUint32(24, sampleRate, true);
-  v.setUint32(28, byteRate, true); v.setUint16(32, blockAlign, true);
-  v.setUint16(34, bits, true);
-  w('data', 36); v.setUint32(40, dataLen, true);
-  new Uint8Array(buf).set(samples, 44);
-  return new Uint8Array(buf);
-}
-
-// ── 预处理：整句 TTS → 按前端分词切 WAV ──
+// ── 预处理：整句 TTS → 按前端分词切 PCM 直切 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
   const wordPos = body.words || {}; // { "没": [0,1], "说": [1,2], ... }
 
   // 1. 调用 MiniMax
   const data = await minimaxTts(env, { text, voice: body.voice }, {
-    format: 'wav',
+    format: 'pcm',
     subtitle_enable: true,
     subtitle_type: 'word',
   });
 
   const fullAudio = hexToBytes(data.data?.audio || '');
+  const sr = data.extra_info?.audio_sample_rate || 32000;
+  const channels = data.extra_info?.audio_channel || 1;
+  const bytesPerMs = sr * channels * 2 / 1000; // 16-bit PCM
 
   // 2. 下载字幕
   let subtitle = null;
@@ -150,11 +113,74 @@ async function preprocessTts(env, body) {
     subtitle = await subResp.json();
   }
 
-  // 3. 解析 WAV
-  const wavInfo = parseWav(fullAudio);
-  const sampleBytes = wavInfo.bits / 8;
-  const bytesPerMs = wavInfo.sampleRate * wavInfo.channels * sampleBytes / 1000;
-  const dataOff = wavInfo.dataOffset;
+  // 3. 构建字符→时间映射
+  const charTime = [];
+  const items = Array.isArray(subtitle) ? subtitle : [];
+  for (const item of items) {
+    const twords = item.timestamped_words || [];
+    if (!twords.length) continue;
+    const totalChars = (item.text_end || 0) - (item.text_begin || 0);
+    const totalTime = (item.time_end || 0) - (item.time_begin || 0);
+    const sBegin = item.text_begin || 0;
+    if (totalChars <= 0 || totalTime <= 0) continue;
+
+    for (const w of twords) {
+      const wBegin = w.word_begin - sBegin;
+      const wEnd = w.word_end - sBegin;
+      for (let ci = wBegin; ci < wEnd; ci++) {
+        const ratioS = ci / totalChars;
+        const ratioE = (ci + 1) / totalChars;
+        charTime[sBegin + ci] = {
+          startMs: item.time_begin + ratioS * totalTime,
+          endMs: item.time_begin + ratioE * totalTime,
+        };
+      }
+    }
+  }
+
+  // 3.5 填补 charTime 空洞（线性插值）
+  if (charTime.length > 0) {
+    const known = [];
+    for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
+    for (let k = 0; k < known.length - 1; k++) {
+      const a = known[k], b = known[k + 1];
+      if (b - a <= 1) continue;
+      const msA = charTime[a].startMs, msB = charTime[b].startMs;
+      const total = msB - msA, steps = b - a;
+      for (let j = a + 1; j < b; j++) {
+        const t = (j - a) / steps;
+        charTime[j] = {
+          startMs: msA + t * total,
+          endMs: msA + ((j - a + 1) / steps) * total,
+        };
+      }
+    }
+  }
+
+  // 4. 按前端分词位置切片（PCM直切，无WAV头）
+  const words = [];
+  for (const [wtext, pos] of Object.entries(wordPos)) {
+    const [cStart, cEnd] = pos;
+    let startMs = null, endMs = null;
+    for (let ci = cStart; ci < cEnd; ci++) {
+      const ct = charTime[ci];
+      if (ct) {
+        if (startMs === null || ct.startMs < startMs) startMs = ct.startMs;
+        if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
+      }
+    }
+    if (startMs !== null && endMs !== null && endMs > startMs) {
+      const startByte = Math.floor(startMs * bytesPerMs);
+      const endByte = Math.ceil(endMs * bytesPerMs);
+      if (startByte < fullAudio.length) {
+        const pcm = fullAudio.slice(startByte, Math.min(endByte, fullAudio.length));
+        if (pcm.length >= 100) {
+          words.push({ text: wtext, pcm_hex: bytesToHex(pcm), sr, ch: channels, bits: 16 });
+        }
+      }
+    }
+  }
+  return words;
 
   // 4. 构建字符→时间映射
   const charTime = [];
@@ -217,9 +243,8 @@ async function preprocessTts(env, body) {
       const endByte = Math.ceil(endMs * bytesPerMs);
       if (startByte < wavInfo.dataSize) {
         const samples = fullAudio.slice(dataOff + startByte, dataOff + Math.min(endByte, wavInfo.dataSize));
-        if (samples.length < 100) { console.warn('preprocessTts: slice too small', wtext, samples.length); continue; }
-        const wav = buildWav(wavInfo.sampleRate, wavInfo.channels, wavInfo.bits, samples);
-        words.push({ text: wtext, audio_hex: bytesToHex(wav) });
+        if (samples.length < 100) continue;
+        words.push({ text: wtext, audio_hex: bytesToHex(samples), pcm: true, sr: wavInfo.sampleRate, ch: wavInfo.channels, bits: wavInfo.bits });
       }
     }
   }

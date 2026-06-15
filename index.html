@@ -653,19 +653,60 @@ async function fetchTtsFromMiniMax(text) {
   return await resp.blob();
 }
 
-async function playAudioBlob(blob, rate) {
-  if (!blob || blob.size < 100) { console.warn('playAudioBlob: blob too small', blob?.size); return false; }
-  const url = URL.createObjectURL(blob);
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  const a = new Audio(url);
-  a.playbackRate = rate;
-  a.volume = parseFloat(volumeRange.value);
-  currentAudio = a;
-  return new Promise(resolve => {
-    a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放失败'; resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放被阻止'; resolve(false); });
-  });
+async function playAudioBlob(data, rate) {
+  // 旧格式: Blob (WAV)
+  if (data instanceof Blob) {
+    if (data.size < 100) return false;
+    const url = URL.createObjectURL(data);
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    const a = new Audio(url);
+    a.playbackRate = rate;
+    a.volume = parseFloat(volumeRange.value);
+    currentAudio = a;
+    return new Promise(resolve => {
+      a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
+      a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
+      a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
+    });
+  }
+  // 新格式: PCM 原始数据
+  if (data?.pcm) {
+    const sr = data.sr || 32000;
+    const ch = data.ch || 1;
+    const bits = data.bits || 16;
+    const pcm = data.pcm;
+    if (pcm.length < 100) return false;
+    try {
+      const ctx = getAudioCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
+      const frames = pcm.length / (bits / 8) / ch;
+      const audioBuf = ctx.createBuffer(ch, frames, sr);
+      for (let c = 0; c < ch; c++) {
+        const cd = audioBuf.getChannelData(c);
+        for (let i = 0; i < frames; i++) {
+          const byteOff = (i * ch + c) * (bits / 8);
+          cd[i] = bits === 16 ? (pcm[byteOff] | (pcm[byteOff + 1] << 8)) / 32768 : pcm[byteOff] / 128 - 1;
+        }
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = audioBuf;
+      src.playbackRate.value = rate;
+      const gain = ctx.createGain();
+      gain.gain.value = parseFloat(volumeRange.value);
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch {} }
+      currentAudioSrc = src;
+      return new Promise(resolve => {
+        src.onended = () => { currentAudioSrc = null; resolve(true); };
+        src.start();
+      });
+    } catch (e) {
+      console.warn('PCM play error:', e);
+      return false;
+    }
+  }
+  return false;
 }
 
 async function speakOneCached(text, rate) {
@@ -763,10 +804,9 @@ preprocessBtn.addEventListener('click', async () => {
     const { words } = await resp.json();
     let cached = 0;
     for (const w of words) {
-      if (w.audio_hex && cacheAvailable) {
-        const buf = new Uint8Array(w.audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-        const blob = new Blob([buf], { type: 'audio/wav' });
-        await ttsCache.set(w.text, blob);
+      if (w.pcm_hex && cacheAvailable) {
+        const buf = new Uint8Array(w.pcm_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+        await ttsCache.set(w.text, { pcm: buf, sr: w.sr || 32000, ch: w.ch || 1, bits: w.bits || 16 });
         cached++;
       }
       preprocessFill.style.width = ((cached / words.length) * 100) + '%';
