@@ -82,8 +82,8 @@ async function minimaxTts(env, body) {
   if (data.base_resp?.status_code !== 0) {
     return new Response(JSON.stringify({error:data.base_resp?.status_msg||'TTS error'}), {status:500,headers:{'Content-Type':'application/json'}});
   }
-  const audioB64 = data.data?.audio || '';
-  const audioBytes = Uint8Array.from(atob(audioB64), c=>c.charCodeAt(0));
+  const audioHex = data.data?.audio || '';
+  const audioBytes = new Uint8Array(audioHex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
   return new Response(audioBytes, {
     headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':audioBytes.length.toString()},
   });
