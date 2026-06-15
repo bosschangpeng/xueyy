@@ -1,6 +1,8 @@
-// 粤语学习助手 — 密码 + 邀请码双验证
+// 粤语学习助手 — 密码 + 邀请码双验证 + MiniMax TTS代理
 // ACCESS_PWD = 管理员密码（永久有效，不消耗）
 // ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
+// MINIMAX_API_KEY = MiniMax API Key
+// MINIMAX_GROUP_ID = MiniMax Group ID
 // KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
@@ -38,6 +40,54 @@ function token() {
   return Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2,'0')).join('');
 }
 
+async function checkAuth(request, env) {
+  const cookie = request.headers.get('Cookie') || '';
+  const m = cookie.match(new RegExp(AUTH_COOKIE + '=([^;]+)'));
+  if (!m) return false;
+  const val = m[1];
+  if (val.startsWith('admin:')) return true;
+  if (env.YUE_KV) {
+    const [code, tok] = val.split(':');
+    if (code && tok) {
+      const stored = await env.YUE_KV.get(code);
+      return stored === tok;
+    }
+  }
+  return val === '1';
+}
+
+async function minimaxTts(env, body) {
+  const apiKey = env.MINIMAX_API_KEY || '';
+  const groupId = env.MINIMAX_GROUP_ID || '';
+  if (!apiKey || !groupId) {
+    return new Response(JSON.stringify({error:'MiniMax not configured'}), {status:500,headers:{'Content-Type':'application/json'}});
+  }
+  const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
+    method: 'POST',
+    headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
+    body: JSON.stringify({
+      model: body.model || 'speech-2.8-hd',
+      text: body.text,
+      stream: false,
+      voice_setting: {voice_id: body.voice||'male-qn-qingse', speed: body.speed||1.0, vol:1.0, pitch:0},
+      audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
+      subtitle_enable: false,
+    }),
+  });
+  if (!resp.ok) {
+    return new Response('MiniMax API error: '+resp.status, {status:500});
+  }
+  const data = await resp.json();
+  if (data.base_resp?.status_code !== 0) {
+    return new Response(JSON.stringify({error:data.base_resp?.status_msg||'TTS error'}), {status:500,headers:{'Content-Type':'application/json'}});
+  }
+  const audioB64 = data.data?.audio || '';
+  const audioBytes = Uint8Array.from(atob(audioB64), c=>c.charCodeAt(0));
+  return new Response(audioBytes, {
+    headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':audioBytes.length.toString()},
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -48,7 +98,6 @@ export default {
     if (url.pathname === '/auth') {
       const code = url.searchParams.get('code') || '';
 
-      // 管理员密码无限次
       if (adminPwd && code === adminPwd) {
         const headers = new Headers();
         headers.set('Set-Cookie', `${AUTH_COOKIE}=admin:${token()}; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
@@ -56,12 +105,10 @@ export default {
         return new Response(null, { status: 302, headers });
       }
 
-      // 邀请码：检查是否在允许列表
       if (!allowedCodes.includes(code)) {
         return new Response(PAGE('邀请码无效'), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });
       }
 
-      // 邀请码：查 KV 是否已被占用
       if (kv) {
         const existing = await kv.get(code);
         if (existing) {
@@ -75,30 +122,35 @@ export default {
         return new Response(null, { status: 302, headers });
       }
 
-      // 无 KV：降级为纯列表验证
       const headers = new Headers();
       headers.set('Set-Cookie', `${AUTH_COOKIE}=1; Path=/; Max-Age=${86400 * COOKIE_DAYS}; SameSite=Lax`);
       headers.set('Location', '/');
       return new Response(null, { status: 302, headers });
     }
 
-    // 检查 cookie
-    const cookie = request.headers.get('Cookie') || '';
-    const m = cookie.match(new RegExp(AUTH_COOKIE + '=([^;]+)'));
-    if (m) {
-      const val = m[1];
-      // 管理员
-      if (val.startsWith('admin:')) return env.ASSETS.fetch(request);
-      // 邀请码：验证 token
-      if (kv) {
-        const [code, tok] = val.split(':');
-        if (code && tok) {
-          const stored = await kv.get(code);
-          if (stored === tok) return env.ASSETS.fetch(request);
-        }
-      } else if (val === '1') {
-        return env.ASSETS.fetch(request);
+    // MiniMax TTS 代理
+    if (url.pathname === '/tts') {
+      // HEAD 检测 MiniMax 是否配置
+      if (request.method === 'HEAD') {
+        return new Response(null, { status: (env.MINIMAX_API_KEY && env.MINIMAX_GROUP_ID) ? 200 : 500 });
       }
+      // POST 代理到 MiniMax
+      if (request.method === 'POST') {
+        if (!(await checkAuth(request, env))) {
+          return new Response('Unauthorized', { status: 401 });
+        }
+        try {
+          return await minimaxTts(env, await request.json());
+        } catch (e) {
+          return new Response(JSON.stringify({error:e.message}), {status:500,headers:{'Content-Type':'application/json'}});
+        }
+      }
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    // 检查 cookie — 放行页面资源
+    if (await checkAuth(request, env)) {
+      return env.ASSETS.fetch(request);
     }
 
     return new Response(PAGE(''), { headers: { 'Content-Type': 'text/html;charset=utf-8' } });

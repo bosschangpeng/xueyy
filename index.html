@@ -55,6 +55,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .segment.space{cursor:default;background:transparent;min-width:10px;border-color:transparent}
 .segment.solo-jp{font-size:calc(var(--seg-size,1.15rem) * 1.6);font-weight:700;color:var(--primary);background:#e8f0fe;border:2px solid #b0c8e8;padding:8px 14px;letter-spacing:1px;font-family:Arial,sans-serif;cursor:pointer}
 .segment.solo-jp:active,.segment.solo-jp.playing{background:var(--tile-active);color:#fff;border-color:var(--tile-active)}
+.preprocess-row{display:flex;align-items:center;gap:4px}
+.preprocess-bar{flex:1;height:5px;background:#e0e4e8;border-radius:3px;overflow:hidden;display:none;min-width:60px}
+.preprocess-bar .fill{height:100%;background:var(--primary);border-radius:3px;transition:width .2s;width:0}
 .jp{display:block;font-size:calc(var(--seg-size,1.15rem) * 0.56);color:#8a93a5;line-height:1.25;margin-top:2px;font-family:Arial,sans-serif;letter-spacing:0;font-weight:400}
 .jp .miss{color:#d0d6e0;font-style:italic}
 .segment.word .jp,.segment.char .jp{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -94,6 +97,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
       <button class="btn btn-primary" id="translateBtn">📝 转白话</button>
       <button class="btn btn-outline" id="speakAllBtn">🔊 朗读全部</button>
       <button class="btn btn-outline btn-sm" id="stopBtn">⏹ 停止</button>
+      <button class="btn btn-outline btn-sm" id="preprocessBtn" title="预缓存发音，提升准确度">⚡ 预处理</button>
       <div class="speed-control">
         <span>语速</span>
         <input type="range" id="speedRange" min="0.25" max="2.0" step="0.05" value="1.0">
@@ -102,6 +106,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
     </div>
     <div class="controls-row">
       <label>🎤 <select id="voiceSelect" title="选择语音引擎"><option value="">加载中...</option></select></label>
+      <label id="mxVoiceWrap" style="display:none" title="MiniMax在线语音（粤语发音更准）">☁️ <select id="mxVoiceSelect"></select></label>
       <label>🔊 <div class="range-wrap">
         <input type="range" id="volumeRange" min="0" max="2.0" step="0.05" value="1.0">
         <span class="rv" id="volumeLabel">1.0</span>
@@ -112,6 +117,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
       </div></label>
       <label style="cursor:pointer;user-select:none"><input type="checkbox" id="jpToggle"> 粤拼</label>
       <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
+    </div>
+    <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
+      <span id="preprocessWarn" style="font-size:.75rem;color:#e67e22;margin-right:8px">💡 建议预处理</span>
+      <div class="preprocess-bar" id="preprocessBar"><div class="fill" id="preprocessFill"></div></div>
+      <span id="preprocessStat" style="font-size:.72rem;color:var(--text-light);margin-left:8px;white-space:nowrap">缓存: <span id="cacheCount">0</span>词 <a href="#" id="clearCacheBtn" style="color:var(--danger);font-size:.7rem;text-decoration:none;margin-left:4px">清</a></span>
     </div>
   </div>
   <div class="card">
@@ -476,9 +486,252 @@ function stopSpeak() {
   window.speechSynthesis.resume();
   currentUtterance = null;
   if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch(e) {} currentAudioSrc = null; }
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
 }
 
-// Volume slider
+// ── MiniMax 在线 TTS + IndexedDB 缓存 ──
+let minimaxConfigured = false;
+let minimaxVoice = localStorage.getItem('mxVoice') || 'male-qn-qingse';
+let currentAudio = null;
+
+const MX_VOICES = [
+  { id: 'male-qn-qingse', label: '青涩男声 ♂' },
+  { id: 'presenter_male', label: '男主播 ♂' },
+  { id: 'female-shaonv', label: '少女 ♀' },
+  { id: 'presenter_female', label: '女主播 ♀' },
+];
+
+const mxVoiceSelect = document.getElementById('mxVoiceSelect');
+const mxVoiceWrap = document.getElementById('mxVoiceWrap');
+function initMxVoice() {
+  mxVoiceSelect.innerHTML = '';
+  for (const v of MX_VOICES) {
+    const o = document.createElement('option');
+    o.value = v.id; o.textContent = v.label;
+    if (v.id === minimaxVoice) o.selected = true;
+    mxVoiceSelect.appendChild(o);
+  }
+  mxVoiceWrap.style.display = '';
+  minimaxConfigured = true;
+  preprocessRow.style.display = '';
+  updateCacheStat();
+}
+mxVoiceSelect.addEventListener('change', () => {
+  minimaxVoice = mxVoiceSelect.value;
+  localStorage.setItem('mxVoice', minimaxVoice);
+});
+
+// IndexedDB TTS 缓存
+const MAX_CACHE_ENTRIES = 400;
+const CACHE_DB = 'yueTts';
+class TtsCache {
+  constructor() {
+    this.db = null;
+    this._count = 0;
+  }
+  async open() {
+    return new Promise((resolve, reject) => {
+      const r = indexedDB.open(CACHE_DB, 1);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('a')) r.result.createObjectStore('a'); };
+      r.onsuccess = () => { this.db = r.result; resolve(); };
+      r.onerror = () => { console.warn('IndexedDB failed, cache disabled'); reject(r.error); };
+    });
+  }
+  async _tx(mode) { if (!this.db) throw new Error('not open'); return this.db.transaction(['a'], mode).objectStore('a'); }
+  async get(key) {
+    if (!this.db) return null;
+    try {
+      const store = await this._tx('readonly');
+      return await new Promise(resolve => { const r = store.get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => resolve(null); });
+    } catch { return null; }
+  }
+  async set(key, blob) {
+    if (!this.db) return;
+    try {
+      const store = await this._tx('readwrite');
+      await new Promise((resolve, reject) => {
+        const r = store.put({ k: key, d: blob, t: Date.now() });
+        r.onsuccess = () => resolve();
+        r.onerror = () => reject(r.error);
+      });
+      this._count++;
+      if (this._count >= MAX_CACHE_ENTRIES) await this.evict();
+    } catch { await this.evict(); try { const store = await this._tx('readwrite'); store.put({ k: key, d: blob, t: Date.now() }); } catch {} }
+  }
+  async has(key) {
+    if (!this.db) return false;
+    try {
+      const store = await this._tx('readonly');
+      return await new Promise(resolve => { const r = store.getKey(key); r.onsuccess = () => resolve(!!r.result); r.onerror = () => resolve(false); });
+    } catch { return false; }
+  }
+  async count() {
+    if (!this.db) return 0;
+    try {
+      const store = await this._tx('readonly');
+      return await new Promise(resolve => { const r = store.count(); r.onsuccess = () => resolve(r.result); r.onerror = () => resolve(0); });
+    } catch { return 0; }
+  }
+  async evict() {
+    if (!this.db) return;
+    try {
+      const all = [];
+      const store = await this._tx('readwrite');
+      await new Promise(resolve => {
+        store.openCursor().onsuccess = (e) => { const c = e.target.result; if (c) { all.push(c.value); c.continue(); } else resolve(); };
+      });
+      if (all.length <= MAX_CACHE_ENTRIES) return;
+      all.sort((a, b) => (a.t || 0) - (b.t || 0));
+      const toDelete = all.slice(0, all.length - MAX_CACHE_ENTRIES);
+      for (const item of toDelete) store.delete(item.k);
+    } catch {}
+  }
+  async clear() {
+    if (!this.db) return;
+    try { const store = await this._tx('readwrite'); store.clear(); this._count = 0; } catch {}
+  }
+}
+const ttsCache = new TtsCache();
+
+async function fetchTtsFromMiniMax(text) {
+  const resp = await fetch('/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice: minimaxVoice }),
+  });
+  if (!resp.ok) throw new Error('MiniMax TTS failed: ' + resp.status);
+  return await resp.blob();
+}
+
+async function playAudioBlob(blob, rate) {
+  const url = URL.createObjectURL(blob);
+  return new Promise((resolve) => {
+    const a = new Audio(url);
+    a.playbackRate = rate;
+    a.volume = parseFloat(volumeRange.value);
+    currentAudio = a;
+    a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
+    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
+    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
+  });
+}
+
+async function speakOneCached(text, rate) {
+  const cached = await ttsCache.get(text);
+  if (cached) {
+    statusBar.textContent = `🔊: "${text}" (缓存)`;
+    return playAudioBlob(cached, rate);
+  }
+  if (minimaxConfigured) {
+    try {
+      const blob = await fetchTtsFromMiniMax(text);
+      await ttsCache.set(text, blob);
+      statusBar.textContent = `🔊: "${text}" (在线)`;
+      return playAudioBlob(blob, rate);
+    } catch (e) {
+      statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
+    }
+  }
+  const voice = await resolveVoice();
+  if (!voice) return false;
+  return speakOne(text, rate, 1, voice, 0, 1);
+}
+
+// ── 预处理 ──
+function extractUnique(text) {
+  const sents = splitSentences(text);
+  const seen = new Set();
+  const unique = [];
+  for (const s of sents) {
+    const words = segmentText(s);
+    for (const w of words) {
+      if (w.type === 'punct' || w.type === 'space') continue;
+      if (!seen.has(w.text)) { seen.add(w.text); unique.push(w.text); }
+    }
+  }
+  return unique;
+}
+
+let preprocessing = false;
+const preprocessBtn = document.getElementById('preprocessBtn');
+const preprocessRow = document.getElementById('preprocessRow');
+const preprocessBar = document.getElementById('preprocessBar');
+const preprocessFill = document.getElementById('preprocessFill');
+const preprocessStat = document.getElementById('preprocessStat');
+const cacheCountEl = document.getElementById('cacheCount');
+
+async function updateCacheStat() {
+  if (!minimaxConfigured) return;
+  const n = await ttsCache.count();
+  cacheCountEl.textContent = n;
+  preprocessStat.title = `缓存 ${n} 个词 (上限${MAX_CACHE_ENTRIES})`;
+}
+
+preprocessBtn.addEventListener('click', async () => {
+  if (preprocessing) return;
+  const text = inputEl.value.trim();
+  if (!text) { showToast('请先输入文本'); return; }
+  const unique = extractUnique(text);
+  if (!unique.length) { showToast('无可处理内容'); return; }
+  const missing = [];
+  for (const w of unique) {
+    if (!(await ttsCache.has(w))) missing.push(w);
+  }
+  if (!missing.length) { statusBar.textContent = '✅ 全部已缓存'; updateCacheStat(); return; }
+
+  preprocessing = true;
+  preprocessBar.style.display = '';
+  preprocessFill.style.width = '0%';
+  preprocessBtn.disabled = true;
+
+  let done = 0, total = missing.length;
+  for (const w of missing) {
+    statusBar.textContent = `⚡ 预处理 (${done+1}/${total}): ${w}`;
+    try {
+      const blob = await fetchTtsFromMiniMax(w);
+      await ttsCache.set(w, blob);
+    } catch (e) { console.warn('预处理失败:', w, e); }
+    done++;
+    preprocessFill.style.width = ((done / total) * 100) + '%';
+  }
+
+  preprocessing = false;
+  preprocessBtn.disabled = false;
+  preprocessBar.style.display = 'none';
+  statusBar.textContent = `✅ 已缓存 ${done} 个词`;
+  updateCacheStat();
+  showToast(`处理完成: ${done} 个词`);
+});
+
+// 清除缓存
+document.getElementById('clearCacheBtn').addEventListener('click', async (e) => {
+  e.preventDefault();
+  await ttsCache.clear();
+  updateCacheStat();
+  showToast('缓存已清除');
+});
+
+// 页面加载时初始化缓存
+(async function initCache() {
+  try {
+    await ttsCache.open();
+    const resp = await fetch('/tts', { method: 'HEAD' });
+    if (resp.ok) { initMxVoice(); }
+  } catch {}
+})();
+
+// 定时更新缓存计数
+setInterval(updateCacheStat, 10000);
+
+// 初始检测 MiniMax 可用性（延迟 2s，等 Worker 响应）
+setTimeout(async () => {
+  if (!minimaxConfigured) {
+    try {
+      const resp = await fetch('/tts', { method: 'HEAD' });
+      if (resp.ok) initMxVoice();
+    } catch {}
+  }
+}, 2000);
 volumeRange.addEventListener('input', () => {
   volumeLabel.textContent = parseFloat(volumeRange.value).toFixed(1);
 });
@@ -660,7 +913,7 @@ async function playWord(si, wi) {
   if (groups[si]) groups[si].classList.add('active');
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
-  await speak(w.text, parseFloat(speedRange.value));
+  await speakOneCached(w.text, parseFloat(speedRange.value));
 }
 
 let savedOriginal = '';
