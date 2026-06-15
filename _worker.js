@@ -75,7 +75,7 @@ async function minimaxTts(env, body) {
     }),
   });
   if (!resp.ok) {
-    return new Response('MiniMax API error: '+resp.status, {status:500});
+    return new Response(JSON.stringify({error:'MiniMax API '+resp.status}), {status:500,headers:{'Content-Type':'application/json'}});
   }
   const data = await resp.json();
   if (data.base_resp?.status_code !== 0) {
