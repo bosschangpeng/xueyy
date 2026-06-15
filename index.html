@@ -658,15 +658,13 @@ async function playAudioBlob(blob, rate) {
   const url = URL.createObjectURL(blob);
   return new Promise((resolve) => {
     const a = new Audio(url);
-    a.preload = 'auto';
     a.playbackRate = rate;
     a.volume = parseFloat(volumeRange.value);
-    if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
     currentAudio = a;
-    a.onloadeddata = () => { a.play().catch(() => { currentAudio = null; resolve(false); }); };
     a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 音频播放失败'; resolve(false); };
-    a.load();
+    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
+    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
   });
 }
 
@@ -677,7 +675,24 @@ async function speakOneCached(text, rate) {
     return speakOne(text, rate, 1, voice, 0, 1);
   }
   if (cacheAvailable) {
-    const cached = await ttsCache.get(text);
+    let cached = await ttsCache.get(text);
+    // 单字缓存未命中，尝试找包含它的多字词
+    if (!cached && text.length === 1 && ttsCache.db) {
+      try {
+        const store = await ttsCache._tx('readonly');
+        const req = store.openCursor();
+        await new Promise(resolve => {
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (c) {
+              if (c.value.k.startsWith(text) || c.value.k.includes(text)) {
+                cached = c.value.d; resolve();
+              } else c.continue();
+            } else resolve();
+          };
+        });
+      } catch {}
+    }
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
       const ok = await playAudioBlob(cached, rate);
