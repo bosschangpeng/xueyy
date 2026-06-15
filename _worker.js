@@ -112,17 +112,21 @@ function parseWav(buf) {
   return { sampleRate, channels, bits, dataOffset, dataSize };
 }
 
-function buildWav(header, samples) {
+function buildWav(sampleRate, channels, bits, samples) {
   const dataLen = samples.length;
-  const total = 36 + dataLen;
+  const byteRate = sampleRate * channels * (bits / 8);
+  const blockAlign = channels * (bits / 8);
   const buf = new ArrayBuffer(44 + dataLen);
   const v = new DataView(buf);
-  const u8 = new Uint8Array(buf);
-  u8.set(new Uint8Array(header.buffer, header.byteOffset, 44), 0);
-  v.setUint32(4, total, true);
-  u8.set(samples, 44);
-  v.setUint32(40, dataLen, true);
-  return u8;
+  const w = (s, o) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w('RIFF', 0); v.setUint32(4, 36 + dataLen, true); w('WAVE', 8);
+  w('fmt ', 12); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, channels, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, byteRate, true); v.setUint16(32, blockAlign, true);
+  v.setUint16(34, bits, true);
+  w('data', 36); v.setUint32(40, dataLen, true);
+  new Uint8Array(buf).set(samples, 44);
+  return new Uint8Array(buf);
 }
 
 // ── 预处理：整句 TTS → 按前端分词切 WAV ──
@@ -150,7 +154,7 @@ async function preprocessTts(env, body) {
   const wavInfo = parseWav(fullAudio);
   const sampleBytes = wavInfo.bits / 8;
   const bytesPerMs = wavInfo.sampleRate * wavInfo.channels * sampleBytes / 1000;
-  const header = fullAudio.slice(0, 44);
+  const dataOff = wavInfo.dataOffset;
 
   // 4. 构建字符→时间映射
   const charTime = [];
@@ -193,8 +197,8 @@ async function preprocessTts(env, body) {
       const startByte = Math.floor(startMs * bytesPerMs);
       const endByte = Math.ceil(endMs * bytesPerMs);
       if (startByte < wavInfo.dataSize) {
-        const samples = fullAudio.slice(44 + startByte, 44 + Math.min(endByte, wavInfo.dataSize));
-        const wav = buildWav(header, samples);
+        const samples = fullAudio.slice(dataOff + startByte, dataOff + Math.min(endByte, wavInfo.dataSize));
+        const wav = buildWav(wavInfo.sampleRate, wavInfo.channels, wavInfo.bits, samples);
         words.push({ text: wtext, audio_hex: bytesToHex(wav) });
       }
     }
