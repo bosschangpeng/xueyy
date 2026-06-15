@@ -998,8 +998,8 @@ async function playSentence(si) {
   if (onlineTtsEnabled) {
     try {
       const blob = await fetchTtsFromMiniMax(s.text);
-      await playAudioBlob(blob, parseFloat(speedRange.value));
-      return;
+      const ok = await playAudioBlob(blob, parseFloat(speedRange.value));
+      if (ok) return;
     } catch {}
   }
   await speak(s.text, parseFloat(speedRange.value));
