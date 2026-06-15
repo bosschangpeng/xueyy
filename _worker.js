@@ -217,31 +217,28 @@ export default {
       if (!apiKey || !groupId) {
         return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
-      const voices = ['Cantonese_GentleLady', 'Cantonese_podacast_host_1'];
-      for (const vid of voices) {
-        try {
-          const start = Date.now();
-          const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
-            method: 'POST',
-            headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
-            body: JSON.stringify({
-              model: 'speech-2.8-hd',
-              text: '你好',
-              stream: false,
-              language_boost: 'Chinese,Yue',
-              voice_setting: {voice_id: vid, speed:1, vol:1, pitch:0},
-              audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
-              subtitle_enable: false,
-            }),
-          });
-          const elapsed = Date.now() - start;
-          const data = await resp.json();
-          const ok = resp.ok && data.base_resp?.status_code === 0;
-          results.push(vid + ' → ' + (ok ? 'OK('+elapsed+'ms)' : 'FAIL:'+(data.base_resp?.status_msg||resp.status)));
-          if (ok) break;
-        } catch (e) {
-          results.push(vid + ' → ERR:' + e.message);
+      // 测试带字幕的请求
+      try {
+        const body = JSON.stringify({
+          model: 'speech-2.8-hd', text: '你好世界', stream: false, language_boost: 'Chinese,Yue',
+          voice_setting: {voice_id:'Cantonese_GentleLady', speed:1, vol:1, pitch:0},
+          audio_setting: {sample_rate:32000, bitrate:128000, format:'wav', channel:1},
+          subtitle_enable: true, subtitle_type: 'word',
+        });
+        const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
+          method: 'POST', headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'}, body,
+        });
+        const data = await resp.json();
+        results.push('API: ' + (resp.ok && data.base_resp?.status_code === 0 ? 'OK' : 'FAIL:'+(data.base_resp?.status_msg||resp.status)));
+        results.push('audio: ' + (data.data?.audio ? data.data.audio.length + 'chars(hex)' : 'NONE'));
+        results.push('sub_file: ' + (data.data?.subtitle_file || 'NONE'));
+        if (data.data?.subtitle_file) {
+          const sr = await fetch(data.data.subtitle_file);
+          const stxt = await sr.text();
+          results.push('sub_raw: ' + stxt.slice(0, 500));
         }
+      } catch (e) {
+        results.push('ERR: ' + e.message);
       }
       return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
     }
@@ -253,7 +250,7 @@ export default {
       }
       try {
         const words = await preprocessTts(env, await request.json());
-        return new Response(JSON.stringify({ words }), {
+        return new Response(JSON.stringify({ words, debug: { count: words.length } }), {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {
