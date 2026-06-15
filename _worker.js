@@ -188,7 +188,7 @@ async function preprocessTts(env, body) {
     for (let k = 0; k < known.length - 1; k++) {
       const a = known[k], b = known[k + 1];
       if (b - a <= 1) continue;
-      const msA = charTime[a].startMs, msB = charTime[b].endMs;
+      const msA = charTime[a].startMs, msB = charTime[b].startMs;
       const total = msB - msA, steps = b - a;
       for (let j = a + 1; j < b; j++) {
         const t = (j - a) / steps;
@@ -217,6 +217,7 @@ async function preprocessTts(env, body) {
       const endByte = Math.ceil(endMs * bytesPerMs);
       if (startByte < wavInfo.dataSize) {
         const samples = fullAudio.slice(dataOff + startByte, dataOff + Math.min(endByte, wavInfo.dataSize));
+        if (samples.length < 100) { console.warn('preprocessTts: slice too small', wtext, samples.length); continue; }
         const wav = buildWav(wavInfo.sampleRate, wavInfo.channels, wavInfo.bits, samples);
         words.push({ text: wtext, audio_hex: bytesToHex(wav) });
       }
