@@ -658,13 +658,15 @@ async function playAudioBlob(blob, rate) {
   const url = URL.createObjectURL(blob);
   return new Promise((resolve) => {
     const a = new Audio(url);
+    a.preload = 'auto';
     a.playbackRate = rate;
     a.volume = parseFloat(volumeRange.value);
-    if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; }
+    if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
     currentAudio = a;
+    a.onloadeddata = () => { a.play().catch(() => { currentAudio = null; resolve(false); }); };
     a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
     a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 音频播放失败'; resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放被阻止'; resolve(false); });
+    a.load();
   });
 }
 
@@ -959,7 +961,7 @@ function clearHighlight() {
 async function playSentence(si) {
   if (speakCooldown) return;
   speakCooldown = true;
-  setTimeout(() => { speakCooldown = false; }, 300);
+  setTimeout(() => { speakCooldown = false; }, 80);
   const s = currentSentences[si];
   if (!s) return;
   stopSpeak(); clearHighlight();
@@ -980,7 +982,7 @@ async function playSentence(si) {
 async function playWord(si, wi) {
   if (speakCooldown) return;
   speakCooldown = true;
-  setTimeout(() => { speakCooldown = false; }, 300);
+  setTimeout(() => { speakCooldown = false; }, 80);
   const s = currentSentences[si];
   if (!s || !s.words[wi]) return;
   const w = s.words[wi];
@@ -1019,7 +1021,7 @@ translateBtn.addEventListener('click', () => {
 speakAllBtn.addEventListener('click', async () => {
   if (speakCooldown) return;
   speakCooldown = true;
-  setTimeout(() => { speakCooldown = false; }, 300);
+  setTimeout(() => { speakCooldown = false; }, 80);
   const text = inputEl.value.trim();
   if (!text) { showToast('没有可朗读的内容'); return; }
   stopSpeak(); clearHighlight();
