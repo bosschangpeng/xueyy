@@ -181,6 +181,25 @@ async function preprocessTts(env, body) {
     }
   }
 
+  // 4.5 填补 charTime 空洞（线性插值）
+  if (charTime.length > 0) {
+    const known = [];
+    for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
+    for (let k = 0; k < known.length - 1; k++) {
+      const a = known[k], b = known[k + 1];
+      if (b - a <= 1) continue;
+      const msA = charTime[a].startMs, msB = charTime[b].endMs;
+      const total = msB - msA, steps = b - a;
+      for (let j = a + 1; j < b; j++) {
+        const t = (j - a) / steps;
+        charTime[j] = {
+          startMs: msA + t * total,
+          endMs: msA + ((j - a + 1) / steps) * total,
+        };
+      }
+    }
+  }
+
   // 5. 按前端分词位置切片
   const words = [];
   for (const [wtext, pos] of Object.entries(wordPos)) {
