@@ -89,18 +89,17 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
-// ── 预处理：整句 TTS → WAV 头部保留 → PCM 切片 ──
+// ── 预处理：整句 TTS → 返回整段 WAV + 字段时间，前端切片 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
   const wordPos = body.words || {};
 
-  // 1. 调用 MiniMax
   const data = await minimaxTts(env, { text, voice: body.voice }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
   const fullWav = hexToBytes(data.data?.audio || '');
-  // 解析 WAV 头部参数
+  // 解析 WAV 头部
   const dv = new DataView(fullWav.buffer, fullWav.byteOffset, fullWav.byteLength);
   let _off = 12, pcmOff = 0, pcmSize = 0, wavSr = 32000, wavCh = 1, wavBits = 16;
   while (_off < fullWav.length - 8) {
@@ -110,16 +109,15 @@ async function preprocessTts(env, body) {
     else if (ck === 'data') { pcmOff = _off + 8; pcmSize = sz; }
     _off += 8 + sz;
   }
-  const bytesPerMs = wavSr * wavCh * (wavBits / 8) / 1000;
 
-  // 2. 下载字幕
+  // 下载字幕
   let subtitle = null;
   if (data.data?.subtitle_file) {
     const subResp = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
     subtitle = await subResp.json();
   }
 
-  // 3. 字符→时间映射
+  // 字符→时间映射
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
@@ -132,50 +130,28 @@ async function preprocessTts(env, body) {
     for (const w of twords) {
       for (let ci = w.word_begin - sBegin; ci < w.word_end - sBegin; ci++) {
         const r = ci / totalChars;
-        charTime[sBegin + ci] = { startMs: item.time_begin + r * totalTime, endMs: item.time_begin + ((ci + 1) / totalChars) * totalTime };
+        charTime[sBegin + ci] = [item.time_begin + r * totalTime, item.time_begin + ((ci + 1) / totalChars) * totalTime];
       }
     }
   }
-
-  // 3.5 填补空洞
+  // 填补空洞
   const known = [];
   for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
   for (let k = 0; k < known.length - 1; k++) {
     const a = known[k], b = known[k + 1];
     if (b - a <= 1) continue;
-    const total = charTime[b].startMs - charTime[a].startMs, steps = b - a;
+    const total = charTime[b][0] - charTime[a][0], steps = b - a;
     for (let j = a + 1; j < b; j++)
-      charTime[j] = { startMs: charTime[a].startMs + ((j - a) / steps) * total, endMs: charTime[a].startMs + ((j - a + 1) / steps) * total };
+      charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
   }
 
-  // 4. 切片 + 保留原始 WAV 头部
-  const words = [];
-  const wavHdr = fullWav.slice(0, pcmOff);
-  for (const [wtext, pos] of Object.entries(wordPos)) {
-    let startMs = null, endMs = null;
-    for (let ci = pos[0]; ci < pos[1]; ci++) {
-      const ct = charTime[ci];
-      if (ct) {
-        if (startMs === null || ct.startMs < startMs) startMs = ct.startMs;
-        if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
-      }
-    }
-    if (startMs === null || endMs === null || endMs <= startMs || pcmOff < 4) continue;
-    // trim 5ms 边缘减少串音
-    const sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
-    const eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
-    if (sb >= pcmSize) continue;
-    const pcm = fullWav.slice(pcmOff + sb, pcmOff + Math.min(eb, pcmSize));
-    if (pcm.length < 100) continue;
-    const out = new Uint8Array(wavHdr.length + pcm.length);
-    out.set(wavHdr, 0);
-    const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
-    outDv.setUint32(4, out.length - 8, true);
-    outDv.setUint32(pcmOff - 4, pcm.length, true);
-    out.set(pcm, wavHdr.length);
-    words.push({ text: wtext, audio_hex: bytesToHex(out) });
-  }
-  return words;
+  return {
+    full_audio_hex: bytesToHex(fullWav),
+    char_time: charTime,
+    word_pos: wordPos,
+    sr: wavSr, ch: wavCh, bits: wavBits,
+    data_off: pcmOff, data_size: pcmSize,
+  };
 }
 
 
@@ -261,8 +237,8 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
       try {
-        const words = await preprocessTts(env, await request.json());
-        return new Response(JSON.stringify({ words, debug: { count: words.length } }), {
+        const result = await preprocessTts(env, await request.json());
+        return new Response(JSON.stringify(result), {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {

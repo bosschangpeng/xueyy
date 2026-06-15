@@ -760,18 +760,49 @@ preprocessBtn.addEventListener('click', async () => {
       try { const j = await resp.json(); msg = j.error || msg; } catch {}
       throw new Error(msg);
     }
-    const { words } = await resp.json();
+    const preData = await resp.json();
+    if (!preData.full_audio_hex) { statusBar.textContent = '❌ Worker 返回空音频'; throw new Error('empty audio'); }
+    const fullWav = new Uint8Array(preData.full_audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    const charTime = preData.char_time || [];
+    const wordPos2 = preData.word_pos || {};
+    const dataOff = preData.data_off || 44;
+    if (dataOff < 4) { statusBar.textContent = '❌ WAV 解析失败'; throw new Error('bad WAV'); }
+    const bytesPerMs = preData.sr * preData.ch * (preData.bits / 8) / 1000;
+    const wavHdr = fullWav.slice(0, dataOff);
+
     let cached = 0;
-    for (const w of words) {
-      if (w.audio_hex && cacheAvailable) {
-        const buf = new Uint8Array(w.audio_hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-        const blob = new Blob([buf], { type: 'audio/wav' });
-        await ttsCache.set(w.text, blob);
-        cached++;
+    const entries = Object.entries(wordPos2);
+    for (const [wtext, pos] of entries) {
+      let startMs = null, endMs = null;
+      for (let ci = pos[0]; ci < pos[1]; ci++) {
+        const ct = charTime[ci];
+        if (ct) {
+          if (startMs === null || ct[0] < startMs) startMs = ct[0];
+          if (endMs === null || ct[1] > endMs) endMs = ct[1];
+        }
       }
-      preprocessFill.style.width = ((cached / words.length) * 100) + '%';
+      if (startMs !== null && endMs !== null && endMs > startMs) {
+        const sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
+        const eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
+        if (sb < preData.data_size) {
+          const pcm = fullWav.slice(dataOff + sb, dataOff + Math.min(eb, preData.data_size));
+          if (pcm.length >= 100) {
+            const out = new Uint8Array(wavHdr.length + pcm.length);
+            out.set(wavHdr, 0);
+            const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+            dv.setUint32(4, out.length - 8, true);
+            dv.setUint32(dataOff - 4, pcm.length, true);
+            out.set(pcm, wavHdr.length);
+            if (cacheAvailable) {
+              await ttsCache.set(wtext, new Blob([out], { type: 'audio/wav' }));
+              cached++;
+            }
+          }
+        }
+      }
+      preprocessFill.style.width = ((cached / entries.length) * 100) + '%';
     }
-    statusBar.textContent = `✅ 已缓存 ${cached}/${words.length} 个词`;
+    statusBar.textContent = `✅ 已缓存 ${cached}/${entries.length} 个词`;
     showToast(`完成: ${cached} 词`);
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
