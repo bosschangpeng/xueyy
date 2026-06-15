@@ -95,7 +95,7 @@ async function preprocessTts(env, body) {
   const wordPos = body.words || {};
 
   // 1. 调用 MiniMax
-  const data = await minimaxTts(env, { text, voice: body.voice, speed: body.speed || 0.7 }, {
+  const data = await minimaxTts(env, { text, voice: body.voice }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
@@ -115,7 +115,7 @@ async function preprocessTts(env, body) {
   // 2. 下载字幕
   let subtitle = null;
   if (data.data?.subtitle_file) {
-    const subResp = await fetch(data.data.subtitle_file);
+    const subResp = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
     subtitle = await subResp.json();
   }
 
@@ -160,7 +160,7 @@ async function preprocessTts(env, body) {
         if (endMs === null || ct.endMs > endMs) endMs = ct.endMs;
       }
     }
-    if (startMs === null || endMs === null || endMs <= startMs) continue;
+    if (startMs === null || endMs === null || endMs <= startMs || pcmOff < 4) continue;
     // trim 5ms 边缘减少串音
     const sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
     const eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
