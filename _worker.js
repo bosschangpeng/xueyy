@@ -128,6 +128,49 @@ export default {
       return new Response(null, { status: 302, headers });
     }
 
+    // 调试端点：测试 Worker → MiniMax 连通性
+    if (url.pathname === '/debug-tts') {
+      const results = [];
+      const apiKey = env.MINIMAX_API_KEY || '';
+      const groupId = env.MINIMAX_GROUP_ID || '';
+      results.push('Key: ' + (apiKey ? '已设('+apiKey.slice(0,6)+'...)' : '未设'));
+      results.push('Group: ' + (groupId ? groupId : '未设'));
+      if (!apiKey || !groupId) {
+        return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+      }
+      try {
+        const start = Date.now();
+        const resp = await fetch('https://api.minimax.chat/v1/text_to_speech?GroupId=' + groupId, {
+          method: 'POST',
+          headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
+          body: JSON.stringify({
+            model: 'speech-2.8-hd',
+            text: '你好',
+            stream: false,
+            voice_setting: {voice_id:'male-qn-qingse', speed:1, vol:1, pitch:0},
+            audio_setting: {sample_rate:32000, bitrate:128000, format:'mp3', channel:1},
+            subtitle_enable: false,
+          }),
+        });
+        const elapsed = Date.now() - start;
+        if (!resp.ok) {
+          results.push('HTTP ' + resp.status + ' (' + elapsed + 'ms)');
+          try { const body = await resp.text(); results.push(body.slice(0, 100)); } catch {}
+        } else {
+          const data = await resp.json();
+          results.push('HTTP ' + resp.status + ' (' + elapsed + 'ms)');
+          if (data.base_resp?.status_code === 0) {
+            results.push('SUCCESS (audio: ' + (data.data?.audio?.length > 0 ? 'YES' : 'NO') + ')');
+          } else {
+            results.push('MINIMAX: ' + (data.base_resp?.status_msg || 'unknown'));
+          }
+        }
+      } catch (e) {
+        results.push('ERROR: ' + e.message);
+      }
+      return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+    }
+
     // MiniMax TTS 代理
     if (url.pathname === '/tts') {
       // HEAD 检测 MiniMax 是否配置
