@@ -582,7 +582,7 @@ class TtsCache {
     if (!this.db) return null;
     try {
       const store = await this._tx('readonly');
-      return await new Promise(resolve => { const r = store.get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => resolve(null); });
+      return await new Promise(resolve => { const r = store.get(key); r.onsuccess = () => resolve(r.result?.d || null); r.onerror = () => resolve(null); });
     } catch { return null; }
   }
   async set(key, blob) {
