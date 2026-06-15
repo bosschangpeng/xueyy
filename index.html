@@ -760,7 +760,7 @@ preprocessBtn.addEventListener('click', async () => {
   preprocessing = false;
   preprocessBtn.disabled = false;
   preprocessBar.style.display = 'none';
-  updateCacheStat();
+  await updateCacheStat();
 });
 
 // 清除缓存
