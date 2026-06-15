@@ -654,15 +654,17 @@ async function fetchTtsFromMiniMax(text) {
 }
 
 async function playAudioBlob(blob, rate) {
+  if (!blob || blob.size < 100) { statusBar.textContent = '⚠ 音频数据无效'; return false; }
   const url = URL.createObjectURL(blob);
   return new Promise((resolve) => {
     const a = new Audio(url);
     a.playbackRate = rate;
     a.volume = parseFloat(volumeRange.value);
+    if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; }
     currentAudio = a;
     a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
-    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
+    a.onerror = () => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 音频播放失败'; resolve(false); };
+    a.play().catch(() => { currentAudio = null; URL.revokeObjectURL(url); statusBar.textContent = '⚠ 播放被阻止'; resolve(false); });
   });
 }
 
@@ -676,14 +678,17 @@ async function speakOneCached(text, rate) {
     const cached = await ttsCache.get(text);
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
-      return playAudioBlob(cached, rate);
+      const ok = await playAudioBlob(cached, rate);
+      if (ok) return true;
+      statusBar.textContent = `⚠ 缓存异常，重试在线...`;
     }
   }
   try {
     const blob = await fetchTtsFromMiniMax(text);
     if (cacheAvailable) await ttsCache.set(text, blob);
     statusBar.textContent = `🔊: "${text}" (在线)`;
-    return playAudioBlob(blob, rate);
+    await playAudioBlob(blob, rate);
+    return true;
   } catch (e) {
     statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
     const voice = await resolveVoice();
@@ -962,6 +967,13 @@ async function playSentence(si) {
   if (groups[si]) groups[si].classList.add('active');
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
+  if (onlineTtsEnabled) {
+    try {
+      const blob = await fetchTtsFromMiniMax(s.text);
+      await playAudioBlob(blob, parseFloat(speedRange.value));
+      return;
+    } catch {}
+  }
   await speak(s.text, parseFloat(speedRange.value));
 }
 
