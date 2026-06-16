@@ -814,6 +814,7 @@ preprocessBtn.addEventListener('click', async () => {
     const pcmBytes = fullWav.slice(dataOff, dataOff + dataSize);
     const pcmLen = pcmBytes.length / (ch * (bits / 8));
     console.log('WAV:', { sr, ch, bits, dataOff, dataSize, wavLen, pcmLen, bytesPerMs });
+    console.log('Worker debug:', preData.debug);
 
     const charTime = preData.char_time;
     if (!charTime || !charTime.length) { statusBar.textContent = '❌ 字幕时间数据为空'; return; }
