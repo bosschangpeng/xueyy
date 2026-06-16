@@ -655,17 +655,28 @@ async function fetchTtsFromMiniMax(text) {
 
 async function playAudioBlob(blob, rate) {
   if (!blob || blob.size < 100) { console.warn('playAudioBlob: bad blob', blob?.size); return false; }
-  const url = URL.createObjectURL(blob);
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  const a = new Audio(url);
-  a.playbackRate = rate;
-  a.volume = parseFloat(volumeRange.value);
-  currentAudio = a;
-  return new Promise(resolve => {
-    a.onended = () => { currentAudio = null; URL.revokeObjectURL(url); resolve(true); };
-    a.onerror = (e) => { console.warn('audio onerror:', a.error?.message || 'unknown', a.src?.slice(0,50)); currentAudio = null; URL.revokeObjectURL(url); resolve(false); };
-    a.play().catch(e => { console.warn('audio play() catch:', e.message); currentAudio = null; URL.revokeObjectURL(url); resolve(false); });
-  });
+  // 用 AudioContext 播放（不受 WAV 头部格式问题影响）
+  try {
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const audioBuf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.playbackRate.value = rate;
+    const gain = ctx.createGain();
+    gain.gain.value = parseFloat(volumeRange.value);
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch {} }
+    currentAudioSrc = src;
+    return new Promise(resolve => {
+      src.onended = () => { currentAudioSrc = null; resolve(true); };
+      src.start();
+    });
+  } catch (e) {
+    console.warn('playAudioBlob decode error:', e.message);
+    return false;
+  }
 }
 
 async function speakOneCached(text, rate) {
