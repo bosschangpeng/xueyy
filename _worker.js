@@ -96,6 +96,22 @@ function addSentencePauses(text) {
   return text.replace(/<#[\d.]+#>$/, '');
 }
 
+// ── 构建「修改后文本位置 → 原文位置」映射 ──
+// addSentencePauses 插入的 <#0.5#>/<#0.2#> 会让 MiniMax 字幕的 text_begin/text_end 偏移，
+// 必须映射回原文位置，前端才能与 renderSentences 的 w.start/w.end 对齐。
+function buildTextMapping(originalText, modifiedText) {
+  const mapping = new Array(modifiedText.length);
+  let oi = 0;
+  for (let mi = 0; mi < modifiedText.length; mi++) {
+    if (oi < originalText.length && modifiedText[mi] === originalText[oi]) {
+      mapping[mi] = oi++;
+    } else {
+      mapping[mi] = -1;
+    }
+  }
+  return mapping;
+}
+
 function parseWavHeader(hex) {
   const headerBytes = hexToBytes(hex.slice(0, 500));
   const dv = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
@@ -110,7 +126,7 @@ function parseWavHeader(hex) {
   return { pcmOff, pcmSize, wavSr, wavCh, wavBits };
 }
 
-async function buildCharTime(subtitle) {
+async function buildCharTime(subtitle, textMapping) {
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
@@ -135,7 +151,10 @@ async function buildCharTime(subtitle) {
       const wTime = wTimeEnd - wTimeBegin;
       if (wTime <= 0) continue;
       for (let ci = wBegin; ci < wEnd; ci++) {
-        charTime[sBegin + ci] = [
+        const modPos = sBegin + ci;
+        const origPos = textMapping ? textMapping[modPos] : modPos;
+        if (origPos == null || origPos < 0) continue;
+        charTime[origPos] = [
           wTimeBegin + ((ci - wBegin) / wChars) * wTime,
           wTimeBegin + ((ci - wBegin + 1) / wChars) * wTime
         ];
@@ -154,26 +173,44 @@ async function buildCharTime(subtitle) {
   return charTime;
 }
 
-// ── 预处理：一份慢速音频，前端按需变速播放 ──
+// ── 预处理：两份音频（原速句版 + 慢速词版） ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
 
-  const modifiedText = addSentencePauses(text);
-  const data = await minimaxTts(env, { text: modifiedText, voice: body.voice, speed: 0.85 }, {
-    format: 'wav', subtitle_enable: true, subtitle_type: 'word',
-  });
+  const sentenceText = addSentencePauses(text);
+  const textMapping = buildTextMapping(text, sentenceText);
 
-  const hex = data.data?.audio || '';
-  const wav = parseWavHeader(hex);
+  const [sentData, wordData] = await Promise.all([
+    minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 1.0 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
+    minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 0.85 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
+  ]);
 
-  let subtitle = null;
-  if (data.data?.subtitle_file) {
-    const r = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
-    subtitle = await r.json();
+  const sentHex = sentData.data?.audio || '';
+  const wordHex = wordData.data?.audio || '';
+  const sentWav = parseWavHeader(sentHex);
+  const wordWav = parseWavHeader(wordHex);
+
+  let sentSubtitle = null, wordSubtitle = null;
+  if (sentData.data?.subtitle_file) {
+    const r = await fetch(sentData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
+    sentSubtitle = await r.json();
   }
-  const charTime = await buildCharTime(subtitle);
+  if (wordData.data?.subtitle_file) {
+    const r = await fetch(wordData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
+    wordSubtitle = await r.json();
+  }
 
-  return { char_time: charTime, sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits, data_off: wav.pcmOff, data_size: wav.pcmSize, text, audio_hex: hex };
+  const sentCharTime = await buildCharTime(sentSubtitle, textMapping);
+  const wordCharTime = await buildCharTime(wordSubtitle, textMapping);
+
+  return {
+    sent_audio_hex: sentHex, word_audio_hex: wordHex,
+    sent_char_time: sentCharTime, word_char_time: wordCharTime,
+    sr: sentWav.wavSr, ch: sentWav.wavCh, bits: sentWav.wavBits,
+    sent_off: sentWav.pcmOff, sent_size: sentWav.pcmSize,
+    word_off: wordWav.pcmOff, word_size: wordWav.pcmSize,
+    text,
+  };
 }
 
 
