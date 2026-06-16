@@ -814,60 +814,101 @@ preprocessBtn.addEventListener('click', async () => {
     }
   }
 
-  statusBar.textContent = '⚡ 预处理中... (一次 API 调用)';
-  preprocessFill.style.width = '20%';
+  statusBar.textContent = '⚡ 预处理中...';
+  preprocessFill.style.width = '5%';
 
-  // 构建分词位置
-  const wordPos = {};
+  // 分批：每批最多 MAX_CHARS 字，在句子边界切分
+  const MAX_CHARS = 120;
   const sents = splitSentences(text);
-  let globalPos = 0;
+  const chunks = [];
+  let cur = '';
   for (const s of sents) {
-    const segs = segmentText(s);
-    let localPos = 0;
-    for (const w of segs) {
-      if (w.type === 'punct' || w.type === 'space') { localPos += w.text.length; continue; }
-      wordPos[w.text] = [globalPos + localPos, globalPos + localPos + w.text.length];
-      localPos += w.text.length;
+    if (cur.length + s.length > MAX_CHARS && cur.length > 0) {
+      chunks.push(cur);
+      cur = '';
     }
-    globalPos += s.length;
+    cur += s;
   }
+  if (cur.length > 0) chunks.push(cur);
 
   try {
-    const resp = await fetch('/preprocess', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, voice: minimaxVoice }),
-    });
-    if (!resp.ok) {
-      let msg = '预处理失败: ' + resp.status;
-      try { const j = await resp.json(); msg = j.error || msg; } catch {}
-      throw new Error(msg);
+    const allPcmChunks = [];
+    const allCharTime = [];
+    let charOffset = 0;
+    let timeOffsetMs = 0;
+    let sr = 32000, ch = 1, bits = 16;
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk = chunks[ci];
+      const pct = 10 + Math.round(80 * ci / chunks.length);
+      statusBar.textContent = `⚡ 预处理第 ${ci+1}/${chunks.length} 批 (${chunk.length}字)...`;
+      preprocessFill.style.width = pct + '%';
+
+      const resp = await fetch('/preprocess', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunk, voice: minimaxVoice }),
+      });
+      if (!resp.ok) {
+        let msg = '预处理失败: ' + resp.status;
+        try { const j = await resp.json(); msg = j.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      const pd = await resp.json();
+      if (!pd.char_time || !pd.audio_hex) throw new Error('第 ' + (ci+1) + ' 批数据无效');
+
+      sr = pd.sr || 32000; ch = pd.ch || 1; bits = pd.bits || 16;
+      const hex = pd.audio_hex;
+      const len = hex.length >> 1;
+      const wav = new Uint8Array(len);
+      for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
+      const dataOff = pd.data_off || 44;
+      const dataSize = pd.data_size || (wav.length - dataOff);
+      const pcm = wav.slice(dataOff, dataOff + dataSize);
+      allPcmChunks.push(pcm);
+
+      // 合并 charTime：偏移时间 + 偏移字符位置
+      const bytesPerMs = sr * ch * (bits / 8) / 1000;
+      const chunkDurationMs = pcm.length / bytesPerMs;
+      const ct = pd.char_time;
+      for (let i = 0; i < ct.length; i++) {
+        if (ct[i]) {
+          allCharTime[charOffset + i] = [
+            ct[i][0] + timeOffsetMs,
+            ct[i][1] + timeOffsetMs
+          ];
+        }
+      }
+      charOffset += chunk.length;
+      timeOffsetMs += chunkDurationMs;
+
+      // 批间等 300ms 避免限流
+      if (ci < chunks.length - 1) await new Promise(r => setTimeout(r, 300));
     }
-    const preData = await resp.json();
-    if (!preData.char_time || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
 
-    preprocessFill.style.width = '50%';
-    statusBar.textContent = '⚡ 解码音频...';
+    // 拼接所有 PCM
+    let totalLen = 0;
+    for (const p of allPcmChunks) totalLen += p.length;
+    const combinedPcm = new Uint8Array(totalLen);
+    let off = 0;
+    for (const p of allPcmChunks) { combinedPcm.set(p, off); off += p.length; }
 
-    const hex = preData.audio_hex;
-    const len = hex.length >> 1;
-    const wav = new Uint8Array(len);
-    for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
-    const sr = preData.sr || 32000, ch = preData.ch || 1, bits = preData.bits || 16;
-    const dataOff = preData.data_off || 44;
-    const dataSize = preData.data_size || (wav.length - dataOff);
-    const pcm = wav.slice(dataOff, dataOff + dataSize);
-
-    preprocessFill.style.width = '80%';
-    songData = { pcm, charTime: preData.char_time, sr, ch, bits, text };
+    preprocessFill.style.width = '90%';
+    statusBar.textContent = '⚡ 缓存中...';
+    songData = { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, text };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { pcm, charTime: preData.char_time, sr, ch, bits });
+      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits });
     }
 
     preprocessFill.style.width = '100%';
-    statusBar.textContent = `✅ 已缓存 (${(pcm.length/1024).toFixed(0)}KB PCM)`;
+    const covered = allCharTime.filter(Boolean).length;
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳)`;
     showToast('完成');
+  } catch (e) {
+    statusBar.textContent = '❌ ' + e.message;
+    showToast(e.message);
+  }
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
     showToast(e.message);
