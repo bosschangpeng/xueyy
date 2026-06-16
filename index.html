@@ -309,8 +309,8 @@ let proxyAvailable = null;
 let proxyRetryAt = 0;
 let speakCooldown = false;
 
-// 整首歌 PCM 缓存（两份）
-let songData = null; // { sentPcm, wordPcm, sentCharTime, wordCharTime, sr, ch, bits, text }
+// 整首歌 PCM 缓存
+let songData = null; // { pcm, charTime, sr, ch, bits, text }
 
 function hashText(text) {
   let h = 0;
@@ -318,34 +318,28 @@ function hashText(text) {
   return 'song_' + (h >>> 0).toString(36);
 }
 
-function slicePcm(pcm, sr, ch, bits, startMs, endMs) {
+const SENTENCE_RATE = 1.18; // 1.0/0.85，把慢速音频加速回原速
+
+async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate) {
   const bytesPerMs = sr * ch * (bits / 8) / 1000;
   const pad = 20;
   let sb = Math.floor(Math.max(0, startMs - pad) * bytesPerMs);
   let eb = Math.ceil((endMs + pad) * bytesPerMs);
   sb -= sb % 2; eb -= eb % 2;
-  if (eb <= sb || sb >= pcm.length) return null;
+  if (eb <= sb || sb >= pcm.length) return false;
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
-  return slice.length >= 100 ? slice : null;
-}
-
-async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate) {
-  const slice = slicePcm(pcm, sr, ch, bits, startMs, endMs);
-  if (!slice) return false;
+  if (slice.length < 100) return false;
   return playAudioBlob({ p: slice, sr, ch, bits }, rate);
 }
 
-async function playCharRange(startChar, endChar, rate, useWordPcm = false) {
-  if (!songData) return false;
-  const { sentPcm, wordPcm, sentCharTime, wordCharTime, sr, ch, bits } = songData;
-  const pcm = useWordPcm ? wordPcm : sentPcm;
-  const ct = useWordPcm ? wordCharTime : sentCharTime;
-  if (!pcm || !ct) return false;
+async function playCharRange(startChar, endChar, rate) {
+  if (!songData || !songData.charTime) return false;
+  const { pcm, charTime, sr, ch, bits } = songData;
   let startMs = null, endMs = null;
   for (let i = startChar; i < endChar; i++) {
-    if (ct[i]) {
-      if (startMs === null || ct[i][0] < startMs) startMs = ct[i][0];
-      if (endMs === null || ct[i][1] > endMs) endMs = ct[i][1];
+    if (charTime[i]) {
+      if (startMs === null || charTime[i][0] < startMs) startMs = charTime[i][0];
+      if (endMs === null || charTime[i][1] > endMs) endMs = charTime[i][1];
     }
   }
   if (startMs === null || endMs === null || endMs <= startMs) return false;
@@ -812,8 +806,8 @@ preprocessBtn.addEventListener('click', async () => {
   // 检查 IndexedDB 缓存
   if (cacheAvailable) {
     const cached = await ttsCache.get(hkey);
-    if (cached && cached.sentPcm && cached.wordPcm) {
-      songData = { sentPcm: cached.sentPcm, wordPcm: cached.wordPcm, sentCharTime: cached.sentCharTime, wordCharTime: cached.wordCharTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
+    if (cached && cached.pcm && cached.charTime) {
+      songData = { pcm: cached.pcm, charTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
       statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
@@ -821,8 +815,8 @@ preprocessBtn.addEventListener('click', async () => {
     }
   }
 
-  statusBar.textContent = '⚡ 预处理中... (两次 API 调用)';
-  preprocessFill.style.width = '10%';
+  statusBar.textContent = '⚡ 预处理中... (一次 API 调用)';
+  preprocessFill.style.width = '20%';
 
   // 构建分词位置
   const wordPos = {};
@@ -843,7 +837,7 @@ preprocessBtn.addEventListener('click', async () => {
     const resp = await fetch('/preprocess', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, words: wordPos, voice: minimaxVoice }),
+      body: JSON.stringify({ text, voice: minimaxVoice }),
     });
     if (!resp.ok) {
       let msg = '预处理失败: ' + resp.status;
@@ -851,32 +845,29 @@ preprocessBtn.addEventListener('click', async () => {
       throw new Error(msg);
     }
     const preData = await resp.json();
-    if (!preData.sent_audio_hex || !preData.word_audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
+    if (!preData.char_time || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
 
-    preprocessFill.style.width = '40%';
+    preprocessFill.style.width = '50%';
     statusBar.textContent = '⚡ 解码音频...';
 
-    function hexToPcm(hex, dataOff, dataSize) {
-      const len = hex.length >> 1;
-      const wav = new Uint8Array(len);
-      for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
-      return wav.slice(dataOff, dataOff + dataSize);
-    }
-
+    const hex = preData.audio_hex;
+    const len = hex.length >> 1;
+    const wav = new Uint8Array(len);
+    for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
     const sr = preData.sr || 32000, ch = preData.ch || 1, bits = preData.bits || 16;
-    const sentPcm = hexToPcm(preData.sent_audio_hex, preData.sent_off || 44, preData.sent_size || 0);
-    preprocessFill.style.width = '60%';
-    const wordPcm = hexToPcm(preData.word_audio_hex, preData.word_off || 44, preData.word_size || 0);
-    preprocessFill.style.width = '80%';
+    const dataOff = preData.data_off || 44;
+    const dataSize = preData.data_size || (wav.length - dataOff);
+    const pcm = wav.slice(dataOff, dataOff + dataSize);
 
-    songData = { sentPcm, wordPcm, sentCharTime: preData.sent_char_time, wordCharTime: preData.word_char_time, sr, ch, bits, text };
+    preprocessFill.style.width = '80%';
+    songData = { pcm, charTime: preData.char_time, sr, ch, bits, text };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { sentPcm, wordPcm, sentCharTime: preData.sent_char_time, wordCharTime: preData.word_char_time, sr, ch, bits });
+      await ttsCache.set(hkey, { pcm, charTime: preData.char_time, sr, ch, bits });
     }
 
     preprocessFill.style.width = '100%';
-    statusBar.textContent = `✅ 已缓存 (句${(sentPcm.length/1024).toFixed(0)}KB + 词${(wordPcm.length/1024).toFixed(0)}KB)`;
+    statusBar.textContent = `✅ 已缓存 (${(pcm.length/1024).toFixed(0)}KB PCM)`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
@@ -1098,7 +1089,7 @@ async function playSentence(si) {
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), false);
+    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value) * SENTENCE_RATE);
     if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
@@ -1118,7 +1109,7 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), true);
+    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value));
     if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));
