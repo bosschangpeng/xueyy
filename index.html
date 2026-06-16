@@ -817,19 +817,13 @@ preprocessBtn.addEventListener('click', async () => {
   statusBar.textContent = '⚡ 预处理中...';
   preprocessFill.style.width = '5%';
 
-  // 分批：每批最多 MAX_CHARS 字，在句子边界切分
-  const MAX_CHARS = 120;
+  // 分批：4 句一组
+  const SENT_PER_CHUNK = 4;
   const sents = splitSentences(text);
   const chunks = [];
-  let cur = '';
-  for (const s of sents) {
-    if (cur.length + s.length > MAX_CHARS && cur.length > 0) {
-      chunks.push(cur);
-      cur = '';
-    }
-    cur += s;
+  for (let i = 0; i < sents.length; i += SENT_PER_CHUNK) {
+    chunks.push(sents.slice(i, i + SENT_PER_CHUNK).join(''));
   }
-  if (cur.length > 0) chunks.push(cur);
 
   try {
     const allPcmChunks = [];
@@ -881,9 +875,6 @@ preprocessBtn.addEventListener('click', async () => {
       }
       charOffset += chunk.length;
       timeOffsetMs += chunkDurationMs;
-
-      // 批间等 300ms 避免限流
-      if (ci < chunks.length - 1) await new Promise(r => setTimeout(r, 300));
     }
 
     // 拼接所有 PCM
