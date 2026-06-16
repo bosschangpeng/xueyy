@@ -796,6 +796,7 @@ preprocessBtn.addEventListener('click', async () => {
     if (!preData.char_time || !preData.word_pos || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
 
     statusBar.textContent = '⚡ 解码音频...';
+    console.time('hex2bytes');
     const hex = preData.audio_hex;
     const hexLen = hex.length;
     const wavLen = hexLen >> 1;
@@ -803,23 +804,24 @@ preprocessBtn.addEventListener('click', async () => {
     for (let i = 0; i < wavLen; i++) {
       fullWav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
     }
+    console.timeEnd('hex2bytes');
     const sr = preData.sr || 32000;
     const ch = preData.ch || 1;
     const bits = preData.bits || 16;
     const bytesPerMs = sr * ch * (bits / 8) / 1000;
-    // 直接从 WAV 中切出 PCM 数据（跳过 decodeAudioData）
     const dataOff = preData.data_off || 44;
     const dataSize = preData.data_size || (fullWav.length - dataOff);
     const pcmBytes = fullWav.slice(dataOff, dataOff + dataSize);
     const pcmLen = pcmBytes.length / (ch * (bits / 8));
+    console.log('WAV:', { sr, ch, bits, dataOff, dataSize, wavLen, pcmLen, bytesPerMs });
 
-    // 切片 + 缓存
     const charTime = preData.char_time;
     if (!charTime || !charTime.length) { statusBar.textContent = '❌ 字幕时间数据为空'; return; }
     const wordPos2 = preData.word_pos || {};
-
-    let cached = 0;
     const entries = Object.entries(wordPos2);
+    console.log('entries:', entries.length, 'charTime:', charTime.length, 'first5:', entries.slice(0,5));
+
+    let cached = 0, skipped = 0;
     for (const [wtext, pos] of entries) {
       let startMs = null, endMs = null;
       for (let ci = pos[0]; ci < pos[1]; ci++) {
@@ -833,20 +835,21 @@ preprocessBtn.addEventListener('click', async () => {
         let sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
         let eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
         sb -= sb % 2; eb -= eb % 2;
-        if (eb <= sb) continue;
+        if (eb <= sb) { skipped++; continue; }
         if (sb < pcmBytes.length) {
           const slice = pcmBytes.slice(sb, Math.min(eb, pcmBytes.length));
-          if (slice.length >= 100 && slice.length < sr * ch * 20) { // 防止超过10秒的异常切片
+          if (slice.length >= 100 && slice.length < sr * ch * 20) {
             if (cacheAvailable) {
               await ttsCache.set(wtext, { p: slice, sr, ch, bits: 16 });
               cached++;
             }
-          }
-        }
-      }
+          } else { skipped++; console.log('skip1', wtext, slice.length); }
+        } else { skipped++; console.log('skip2', wtext, sb, pcmBytes.length); }
+      } else { skipped++; console.log('skip3', wtext, startMs, endMs); }
       preprocessFill.style.width = ((cached / entries.length) * 100) + '%';
     }
-    statusBar.textContent = `✅ 已缓存 ${cached}/${entries.length} 个词`;
+    console.log('cached:', cached, 'skipped:', skipped);
+    statusBar.textContent = `✅ 已缓存 ${cached}/${entries.length} 个词 (跳过${skipped})`;
     showToast(`完成: ${cached} 词`);
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
