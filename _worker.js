@@ -118,7 +118,7 @@ async function preprocessTts(env, body) {
     subtitle = await subResp.json();
   }
 
-  // 字符→时间映射
+  // 字符→时间映射（用词级时间戳，不用句子插值）
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
@@ -129,8 +129,26 @@ async function preprocessTts(env, body) {
     if (totalChars <= 0 || totalTime <= 0) continue;
     const sBegin = item.text_begin || 0;
     for (const w of twords) {
-      for (let ci = w.word_begin - sBegin; ci < w.word_end - sBegin; ci++) {
-        charTime[sBegin + ci] = [item.time_begin + (ci / totalChars) * totalTime, item.time_begin + ((ci + 1) / totalChars) * totalTime];
+      const wBegin = w.word_begin - sBegin;
+      const wEnd = w.word_end - sBegin;
+      const wChars = wEnd - wBegin;
+      if (wChars <= 0) continue;
+      // 优先用词级时间戳
+      let wTimeBegin, wTimeEnd;
+      if (w.time_begin != null && w.time_end != null) {
+        wTimeBegin = w.time_begin;
+        wTimeEnd = w.time_end;
+      } else {
+        wTimeBegin = item.time_begin + (wBegin / totalChars) * totalTime;
+        wTimeEnd = item.time_begin + (wEnd / totalChars) * totalTime;
+      }
+      const wTime = wTimeEnd - wTimeBegin;
+      if (wTime <= 0) continue;
+      for (let ci = wBegin; ci < wEnd; ci++) {
+        charTime[sBegin + ci] = [
+          wTimeBegin + ((ci - wBegin) / wChars) * wTime,
+          wTimeBegin + ((ci - wBegin + 1) / wChars) * wTime
+        ];
       }
     }
   }

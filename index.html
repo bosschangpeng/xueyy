@@ -1015,9 +1015,17 @@ function renderSentences(text) {
   const sents = splitSentences(text);
   segContainer.innerHTML = '';
   currentSentences = [];
+  let globalPos = 0;
   for (let si = 0; si < sents.length; si++) {
     const words = segmentText(sents[si]);
-    currentSentences.push({ text: sents[si], words });
+    let localPos = 0;
+    for (const w of words) {
+      w.start = globalPos + localPos;
+      w.end = globalPos + localPos + w.text.length;
+      localPos += w.text.length;
+    }
+    currentSentences.push({ text: sents[si], words, start: globalPos, end: globalPos + sents[si].length });
+    globalPos += sents[si].length;
     const group = document.createElement('div');
     group.className = 'sgroup';
     const hdr = document.createElement('div');
@@ -1073,14 +1081,9 @@ async function playSentence(si) {
   if (groups[si]) groups[si].classList.add('active');
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
-  // 优先从 songData 切片播放
   if (songData) {
-    const text = inputEl.value.trim();
-    const start = text.indexOf(s.text);
-    if (start !== -1) {
-      const ok = await playCharRange(start, start + s.text.length, parseFloat(speedRange.value));
-      if (ok) return;
-    }
+    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value));
+    if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
 }
@@ -1098,14 +1101,9 @@ async function playWord(si, wi) {
   if (groups[si]) groups[si].classList.add('active');
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
-  // 优先从 songData 切片播放
   if (songData) {
-    const text = inputEl.value.trim();
-    const wordStart = text.indexOf(w.text);
-    if (wordStart !== -1) {
-      const ok = await playCharRange(wordStart, wordStart + w.text.length, parseFloat(speedRange.value));
-      if (ok) return;
-    }
+    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value));
+    if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));
 }
