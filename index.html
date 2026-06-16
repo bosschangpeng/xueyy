@@ -900,10 +900,6 @@ preprocessBtn.addEventListener('click', async () => {
     statusBar.textContent = '❌ ' + e.message;
     showToast(e.message);
   }
-  } catch (e) {
-    statusBar.textContent = '❌ ' + e.message;
-    showToast(e.message);
-  }
 
   preprocessing = false;
   preprocessBtn.disabled = false;
