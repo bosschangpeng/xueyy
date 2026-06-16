@@ -820,9 +820,11 @@ preprocessBtn.addEventListener('click', async () => {
     if (!charTime || !charTime.length) { statusBar.textContent = '❌ 字幕时间数据为空'; return; }
     const wordPos2 = preData.word_pos || {};
     const entries = Object.entries(wordPos2);
-    console.log('entries:', entries.length, 'charTime:', charTime.length, 'first5:', entries.slice(0,5));
+    console.log('entries:', entries.length, 'charTime:', charTime.length);
+    console.log('first5 words:', entries.slice(0,5).map(([w,p]) => `"${w}"=[${p[0]},${p[1]}]`));
+    console.log('charTime first 15:', charTime.slice(0,15).map((v,i) => `[${i}]:${v ? '['+Math.round(v[0])+','+Math.round(v[1])+']' : 'null'}`));
 
-    let cached = 0, skipped = 0;
+    let cached = 0, skipped = 0, debugCount = 0;
     for (const [wtext, pos] of entries) {
       let startMs = null, endMs = null;
       for (let ci = pos[0]; ci < pos[1]; ci++) {
@@ -844,9 +846,9 @@ preprocessBtn.addEventListener('click', async () => {
               await ttsCache.set(wtext, { p: slice, sr, ch, bits: 16 });
               cached++;
             }
-          } else { skipped++; console.log('skip1', wtext, slice.length); }
+          } else { skipped++; if (debugCount < 3) { console.log('skip1', wtext, 'pos=', pos, 'startMs=', Math.round(startMs), 'endMs=', Math.round(endMs), 'slice=', slice.length, 'max=', sr*ch*20); debugCount++; } }
         } else { skipped++; console.log('skip2', wtext, sb, pcmBytes.length); }
-      } else { skipped++; console.log('skip3', wtext, startMs, endMs); }
+      } else { skipped++; if (debugCount < 6) { console.log('skip3', wtext, 'pos=', pos, 'startMs=', startMs, 'endMs=', endMs); debugCount++; } }
       preprocessFill.style.width = ((cached / entries.length) * 100) + '%';
     }
     console.log('cached:', cached, 'skipped:', skipped);
