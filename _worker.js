@@ -89,12 +89,23 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
+// ── 插入停顿标记 ──
+function addPauses(text) {
+  // 句末停顿
+  text = text.replace(/([。！？.!?\n\r]+)/g, '$1<#0.5#>');
+  // 逗号/分号/冒号停顿
+  text = text.replace(/([，、；：,;:]+)/g, '$1<#0.2#>');
+  // 去掉末尾多余停顿
+  text = text.replace(/<#[\d.]+#>$/, '');
+  return text;
+}
+
 // ── 预处理：只返回字段时间映射 + WAV 参数，音频由前端另取 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
-  const wordPos = body.words || {};
 
-  const data = await minimaxTts(env, { text, voice: body.voice }, {
+  const modifiedText = addPauses(text);
+  const data = await minimaxTts(env, { text: modifiedText, voice: body.voice, speed: 0.85 }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
