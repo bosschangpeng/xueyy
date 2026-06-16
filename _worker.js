@@ -100,13 +100,20 @@ function addSentencePauses(text) {
 // addSentencePauses 插入的 <#0.5#>/<#0.2#> 会让 MiniMax 字幕的 text_begin/text_end 偏移，
 // 必须映射回原文位置，前端才能与 renderSentences 的 w.start/w.end 对齐。
 function buildTextMapping(originalText, modifiedText) {
-  const mapping = new Array(modifiedText.length);
+  const mapping = new Array(modifiedText.length).fill(-1);
+  // 先标记所有停顿标记位置（<#0.5#> 等）
+  const markerRe = /<#[\d.]+#>/g;
+  const markerSet = new Set();
+  let m;
+  while ((m = markerRe.exec(modifiedText)) !== null) {
+    for (let i = m.index; i < m.index + m[0].length; i++) markerSet.add(i);
+  }
+  // 双指针：仅在非标记位置做原文匹配
   let oi = 0;
   for (let mi = 0; mi < modifiedText.length; mi++) {
+    if (markerSet.has(mi)) continue;
     if (oi < originalText.length && modifiedText[mi] === originalText[oi]) {
       mapping[mi] = oi++;
-    } else {
-      mapping[mi] = -1;
     }
   }
   return mapping;

@@ -865,14 +865,17 @@ preprocessBtn.addEventListener('click', async () => {
       const bytesPerMs = sr * ch * (bits / 8) / 1000;
       const chunkDurationMs = pcm.length / bytesPerMs;
       const ct = pd.char_time;
+      let batchCovered = 0;
       for (let i = 0; i < ct.length; i++) {
         if (ct[i]) {
           allCharTime[charOffset + i] = [
             ct[i][0] + timeOffsetMs,
             ct[i][1] + timeOffsetMs
           ];
+          batchCovered++;
         }
       }
+      console.log(`批次${ci+1}: ${chunk.length}字, charTime覆盖${batchCovered}/${ct.length}, 音频${chunkDurationMs.toFixed(0)}ms`);
       charOffset += chunk.length;
       timeOffsetMs += chunkDurationMs;
     }
@@ -932,16 +935,41 @@ document.getElementById('debugCharTimeBtn').addEventListener('click', () => {
   if (!songData) { showToast('请先预处理'); return; }
   const { charTime, pcm, sr, text } = songData;
   const dur = pcm ? (pcm.length / (sr * 2) * 1000).toFixed(0) : '?';
-  const lines = [`原文(${text.length}字): ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
-    `音频: ${dur}ms, PCM=${(pcm?.length/1024).toFixed(0)}KB, charTime有${charTime?.filter(Boolean).length || 0}/${text.length}字`];
+  const covered = charTime ? charTime.filter(Boolean).length : 0;
+  const lines = [`原文(${text.length}字): ${text.slice(0, 40)}${text.length > 40 ? '...' : ''}`,
+    `音频: ${dur}ms, PCM=${(pcm?.length/1024).toFixed(0)}KB`,
+    `charTime覆盖: ${covered}/${text.length} (${(covered/text.length*100).toFixed(0)}%)`];
+
+  // 找出前10个空缺位置
+  const gaps = [];
+  for (let i = 0; i < text.length && gaps.length < 10; i++) {
+    if (!charTime?.[i]) gaps.push(i);
+  }
+  if (gaps.length) lines.push(`空缺位置: ${gaps.join(', ')}${gaps.length >= 10 ? '...' : ''}`);
+
+  // 显示前20字对齐详情
   for (let i = 0; i < Math.min(20, text.length); i++) {
     const ct = charTime?.[i];
     lines.push(`[${i}] '${text[i]}' → ${ct ? ct[0].toFixed(0)+'-'+ct[1].toFixed(0)+'ms' : '∅'}`);
   }
+
+  // 显示每个词的播放范围测试
+  if (currentSentences.length) {
+    lines.push('--- 词组播放测试 ---');
+    for (const s of currentSentences) {
+      for (const w of s.words) {
+        if (w.type === 'punct' || w.type === 'space') continue;
+        let ok = false;
+        for (let i = w.start; i < w.end; i++) { if (charTime?.[i]) { ok = true; break; } }
+        lines.push(`'${w.text}' [${w.start}-${w.end}) → ${ok ? '✅可播' : '❌无时间'}`);
+      }
+    }
+  }
+
   const info = lines.join('\n');
   console.log('charTime debug:\n' + info);
   showToast('已输出到控制台 (F12)');
-  statusBar.textContent = '🎯 ' + lines.slice(0, 3).join(' | ');
+  statusBar.textContent = `🎯 覆盖${covered}/${text.length} (${(covered/text.length*100).toFixed(0)}%)`;
 });
 
 // 页面加载时初始化缓存
@@ -1036,7 +1064,13 @@ inputEl.addEventListener('input', () => {
     return;
   }
   clearTimeout(renderTimer);
-  renderTimer = setTimeout(() => renderSentences(inputEl.value), 200);
+  renderTimer = setTimeout(() => {
+    renderSentences(inputEl.value);
+    // 文本变化后清除旧 songData，防止旧 charTime 与新文本位置不匹配
+    if (songData && songData.text !== inputEl.value.trim()) {
+      songData = null;
+    }
+  }, 200);
   saveHistory(inputEl.value);
 });
 function saveHistory(text) {
@@ -1153,7 +1187,7 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, 1.0);
+    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value));
     if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));
@@ -1190,6 +1224,22 @@ speakAllBtn.addEventListener('click', async () => {
   if (!text) { showToast('没有可朗读的内容'); return; }
   stopSpeak(); clearHighlight();
   const rate = parseFloat(speedRange.value);
+  // 如果有 songData，逐句用 charTime 播放
+  if (songData && songData.charTime) {
+    const groups = segContainer.querySelectorAll('.sgroup');
+    for (let si = 0; si < currentSentences.length; si++) {
+      const s = currentSentences[si];
+      if (groups[si]) groups[si].classList.add('active');
+      const hdrs = segContainer.querySelectorAll('.shdr');
+      if (hdrs[si]) hdrs[si].classList.add('playing');
+      const ok = await playCharRange(s.start, s.end, rate);
+      if (!ok) await speak(s.text, rate);
+      await new Promise(r => setTimeout(r, 100));
+      clearHighlight();
+    }
+    statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
+    return;
+  }
   await speak(text, rate);
   statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
 });
