@@ -121,11 +121,6 @@ async function preprocessTts(env, body) {
   // 字符→时间映射
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
-  console.log('subtitle items:', items.length);
-  if (items.length > 0) {
-    console.log('first item keys:', Object.keys(items[0]));
-    console.log('first item:', JSON.stringify(items[0]).slice(0, 500));
-  }
   for (const item of items) {
     const twords = item.timestamped_words || [];
     if (!twords.length) continue;
@@ -150,11 +145,7 @@ async function preprocessTts(env, body) {
       charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
   }
 
-  // 返回调试信息
-  const debugSub = items.length > 0 ? items[0] : null;
-  const debugTw = debugSub ? (debugSub.timestamped_words || []).slice(0, 3) : [];
-  const debugCtSample = charTime.slice(0, 15).map((v,i) => `[${i}]:${v ? '['+Math.round(v[0])+','+Math.round(v[1])+']' : 'null'}`);
-  return { char_time: charTime, word_pos: wordPos, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text, audio_hex: hex, debug: { subItems: items.length, textBegin: debugSub?.text_begin, textEnd: debugSub?.text_end, timeBegin: debugSub?.time_begin, timeEnd: debugSub?.time_end, firstWords: debugTw, charTimeSample: debugCtSample, charTimeLen: charTime.length } };
+  return { char_time: charTime, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text, audio_hex: hex };
 }
 
 
