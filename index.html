@@ -836,7 +836,7 @@ preprocessBtn.addEventListener('click', async () => {
       }
       if (startMs !== null && endMs !== null && endMs > startMs) {
         let sb = Math.floor(Math.max(0, startMs + 5) * bytesPerMs);
-        let eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
+        let eb = Math.max(sb + 2, Math.ceil((endMs - 5) * bytesPerMs));
         sb -= sb % 2; eb -= eb % 2;
         if (eb <= sb) { skipped++; continue; }
         if (sb < pcmBytes.length) {
