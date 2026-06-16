@@ -89,28 +89,30 @@ function bytesToHex(bytes) {
   return Array.from(bytes, b => b.toString(16).padStart(2,'0')).join('');
 }
 
-// ── 插入停顿标记 ──
-function addPauses(text) {
-  // 句末停顿
+// ── 停顿标记 ──
+function addSentencePauses(text) {
   text = text.replace(/([。！？.!?\n\r]+)/g, '$1<#0.5#>');
-  // 逗号/分号/冒号停顿
   text = text.replace(/([，、；：,;:]+)/g, '$1<#0.2#>');
-  // 去掉末尾多余停顿
-  text = text.replace(/<#[\d.]+#>$/, '');
-  return text;
+  return text.replace(/<#[\d.]+#>$/, '');
 }
 
-// ── 预处理：只返回字段时间映射 + WAV 参数，音频由前端另取 ──
-async function preprocessTts(env, body) {
-  const text = body.text || '';
+function buildWordText(text, wordPos) {
+  const pauses = new Map();
+  for (const v of Object.values(wordPos)) {
+    if (Array.isArray(v) && v.length >= 2) pauses.set(v[1], 0.1);
+  }
+  for (let i = 0; i < text.length; i++) {
+    if (/[。！？.!?\n\r]/.test(text[i])) pauses.set(i + 1, 0.5);
+    else if (/[，、；：,;:]/.test(text[i])) pauses.set(i + 1, 0.2);
+  }
+  let result = text;
+  for (const [pos, dur] of [...pauses.entries()].sort((a, b) => b[0] - a[0])) {
+    result = result.slice(0, pos) + `<#${dur}#>` + result.slice(pos);
+  }
+  return result;
+}
 
-  const modifiedText = addPauses(text);
-  const data = await minimaxTts(env, { text: modifiedText, voice: body.voice, speed: 0.85 }, {
-    format: 'wav', subtitle_enable: true, subtitle_type: 'word',
-  });
-
-  // 解析 WAV 头部（只解码前 500 hex 字符，够读头部参数）
-  const hex = data.data?.audio || '';
+function parseWavHeader(hex) {
   const headerBytes = hexToBytes(hex.slice(0, 500));
   const dv = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
   let _off = 12, pcmOff = 0, pcmSize = 0, wavSr = 32000, wavCh = 1, wavBits = 16;
@@ -121,15 +123,10 @@ async function preprocessTts(env, body) {
     else if (ck === 'data') { pcmOff = _off + 8; pcmSize = sz; }
     _off += 8 + sz;
   }
+  return { pcmOff, pcmSize, wavSr, wavCh, wavBits };
+}
 
-  // 下载字幕
-  let subtitle = null;
-  if (data.data?.subtitle_file) {
-    const subResp = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
-    subtitle = await subResp.json();
-  }
-
-  // 字符→时间映射（用词级时间戳，不用句子插值）
+async function buildCharTime(subtitle) {
   const charTime = [];
   const items = Array.isArray(subtitle) ? subtitle : [];
   for (const item of items) {
@@ -144,11 +141,9 @@ async function preprocessTts(env, body) {
       const wEnd = w.word_end - sBegin;
       const wChars = wEnd - wBegin;
       if (wChars <= 0) continue;
-      // 优先用词级时间戳
       let wTimeBegin, wTimeEnd;
       if (w.time_begin != null && w.time_end != null) {
-        wTimeBegin = w.time_begin;
-        wTimeEnd = w.time_end;
+        wTimeBegin = w.time_begin; wTimeEnd = w.time_end;
       } else {
         wTimeBegin = item.time_begin + (wBegin / totalChars) * totalTime;
         wTimeEnd = item.time_begin + (wEnd / totalChars) * totalTime;
@@ -163,7 +158,6 @@ async function preprocessTts(env, body) {
       }
     }
   }
-  // 填补空洞
   const known = [];
   for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
   for (let k = 0; k < known.length - 1; k++) {
@@ -173,8 +167,48 @@ async function preprocessTts(env, body) {
     for (let j = a + 1; j < b; j++)
       charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
   }
+  return charTime;
+}
 
-  return { char_time: charTime, sr: wavSr, ch: wavCh, bits: wavBits, data_off: pcmOff, data_size: pcmSize, text, audio_hex: hex };
+// ── 预处理：两份音频（原速句版 + 慢速词版） ──
+async function preprocessTts(env, body) {
+  const text = body.text || '';
+  const wordPos = body.words || {};
+
+  const sentenceText = addSentencePauses(text);
+  const wordText = buildWordText(text, wordPos);
+
+  const [sentData, wordData] = await Promise.all([
+    minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 1.0 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
+    minimaxTts(env, { text: wordText, voice: body.voice, speed: 0.85 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
+  ]);
+
+  const sentHex = sentData.data?.audio || '';
+  const wordHex = wordData.data?.audio || '';
+  const sentWav = parseWavHeader(sentHex);
+  const wordWav = parseWavHeader(wordHex);
+
+  let sentSubtitle = null, wordSubtitle = null;
+  if (sentData.data?.subtitle_file) {
+    const r = await fetch(sentData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
+    sentSubtitle = await r.json();
+  }
+  if (wordData.data?.subtitle_file) {
+    const r = await fetch(wordData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
+    wordSubtitle = await r.json();
+  }
+
+  const sentCharTime = await buildCharTime(sentSubtitle);
+  const wordCharTime = await buildCharTime(wordSubtitle);
+
+  return {
+    sent_audio_hex: sentHex, word_audio_hex: wordHex,
+    sent_char_time: sentCharTime, word_char_time: wordCharTime,
+    sr: sentWav.wavSr, ch: sentWav.wavCh, bits: sentWav.wavBits,
+    sent_off: sentWav.pcmOff, sent_size: sentWav.pcmSize,
+    word_off: wordWav.pcmOff, word_size: wordWav.pcmSize,
+    text,
+  };
 }
 
 
