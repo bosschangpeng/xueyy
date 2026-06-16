@@ -821,15 +821,6 @@ preprocessBtn.addEventListener('click', async () => {
     const charTime = preData.char_time;
     if (!charTime || !charTime.length) { statusBar.textContent = '❌ 字幕时间数据为空'; return; }
     const wordPos2 = preData.word_pos || {};
-    const header44 = new Uint8Array([
-      0x52,0x49,0x46,0x46,0,0,0,0,0x57,0x41,0x56,0x45,0x66,0x6D,0x74,0x20,
-      16,0,0,0,1,0,ch,0,0,0,0,0,0,0,0,0,0,0,0,0,16,0,0x64,0x61,0x74,0x61,0,0,0,0]);
-    const dv = new DataView(header44.buffer);
-    const blockAlign = ch * 2;
-    dv.setUint32(24, sr, true);
-    dv.setUint32(28, sr * blockAlign, true);
-    dv.setUint16(32, blockAlign, true);
-    dv.setUint16(34, 16, true);
 
     let cached = 0;
     const entries = Object.entries(wordPos2);
@@ -848,14 +839,8 @@ preprocessBtn.addEventListener('click', async () => {
         if (sb < pcmLen * 2) {
           const slice = pcmBytes.slice(sb, Math.min(eb, pcmLen * 2));
           if (slice.length >= 100) {
-            const out = new Uint8Array(44 + slice.length);
-            out.set(header44, 0);
-            const od = new DataView(out.buffer);
-            od.setUint32(4, out.length - 8, true);
-            od.setUint32(40, slice.length, true);
-            out.set(slice, 44);
             if (cacheAvailable) {
-              await ttsCache.set(wtext, { p: slice.slice(0), sr, ch, bits: 16 });
+              await ttsCache.set(wtext, { p: slice, sr, ch, bits: 16 });
               cached++;
             }
           }
