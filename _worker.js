@@ -97,19 +97,7 @@ function addSentencePauses(text) {
 }
 
 function buildWordText(text, wordPos) {
-  const pauses = new Map();
-  for (const v of Object.values(wordPos)) {
-    if (Array.isArray(v) && v.length >= 2) pauses.set(v[1], 0.1);
-  }
-  for (let i = 0; i < text.length; i++) {
-    if (/[。！？.!?\n\r]/.test(text[i])) pauses.set(i + 1, 0.5);
-    else if (/[，、；：,;:]/.test(text[i])) pauses.set(i + 1, 0.2);
-  }
-  let result = text;
-  for (const [pos, dur] of [...pauses.entries()].sort((a, b) => b[0] - a[0])) {
-    result = result.slice(0, pos) + `<#${dur}#>` + result.slice(pos);
-  }
-  return result;
+  return addSentencePauses(text);
 }
 
 function parseWavHeader(hex) {
