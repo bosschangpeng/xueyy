@@ -794,33 +794,24 @@ preprocessBtn.addEventListener('click', async () => {
     }
     const preData = await resp.json();
     if (!preData.char_time || !preData.word_pos || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
-    const dataOff = preData.data_off || 44;
-    if (dataOff < 4) { statusBar.textContent = '❌ WAV 解析失败'; return; }
 
     statusBar.textContent = '⚡ 解码音频...';
     const hex = preData.audio_hex;
-    const bytes = hex.match(/.{1,2}/g);
-    if (!bytes) throw new Error('hex parse fail');
-    const fullWav = new Uint8Array(bytes.map(b => parseInt(b, 16)));
-    const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') await ctx.resume();
-    const audioBuf = await ctx.decodeAudioData(fullWav.buffer.slice(0, fullWav.byteLength));
-    const ch = Math.min(audioBuf.numberOfChannels, preData.ch || 1);
-    const sr = audioBuf.sampleRate;
-    const bytesPerMs = sr * ch * 2 / 1000;
-    // 把 AudioBuffer 的 float32 PCM 转成 int16 字节数组
-    const pcmLen = audioBuf.length * ch;
-    const pcmBytes = new Uint8Array(pcmLen * 2);
-    for (let c = 0; c < ch; c++) {
-      const cd = audioBuf.getChannelData(c);
-      for (let i = 0; i < audioBuf.length; i++) {
-        const s = Math.max(-1, Math.min(1, cd[i]));
-        const val = s < 0 ? s * 32768 : s * 32767;
-        const byteOff = (i * ch + c) * 2;
-        pcmBytes[byteOff] = val & 0xFF;
-        pcmBytes[byteOff + 1] = (val >> 8) & 0xFF;
-      }
+    const hexLen = hex.length;
+    const wavLen = hexLen >> 1;
+    const fullWav = new Uint8Array(wavLen);
+    for (let i = 0; i < wavLen; i++) {
+      fullWav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
     }
+    const sr = preData.sr || 32000;
+    const ch = preData.ch || 1;
+    const bits = preData.bits || 16;
+    const bytesPerMs = sr * ch * (bits / 8) / 1000;
+    // 直接从 WAV 中切出 PCM 数据（跳过 decodeAudioData）
+    const dataOff = preData.data_off || 44;
+    const dataSize = preData.data_size || (fullWav.length - dataOff);
+    const pcmBytes = fullWav.slice(dataOff, dataOff + dataSize);
+    const pcmLen = pcmBytes.length / (ch * (bits / 8));
 
     // 切片 + 缓存
     const charTime = preData.char_time;
@@ -843,8 +834,8 @@ preprocessBtn.addEventListener('click', async () => {
         let eb = Math.ceil(Math.max(sb + 1, endMs - 5) * bytesPerMs);
         sb -= sb % 2; eb -= eb % 2;
         if (eb <= sb) continue;
-        if (sb < pcmLen * 2) {
-          const slice = pcmBytes.slice(sb, Math.min(eb, pcmLen * 2));
+        if (sb < pcmBytes.length) {
+          const slice = pcmBytes.slice(sb, Math.min(eb, pcmBytes.length));
           if (slice.length >= 100 && slice.length < sr * ch * 20) { // 防止超过10秒的异常切片
             if (cacheAvailable) {
               await ttsCache.set(wtext, { p: slice, sr, ch, bits: 16 });
