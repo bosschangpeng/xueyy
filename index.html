@@ -653,13 +653,29 @@ async function fetchTtsFromMiniMax(text) {
   return await resp.blob();
 }
 
-async function playAudioBlob(blob, rate) {
-  if (!blob || blob.size < 100) { console.warn('playAudioBlob: bad blob', blob?.size); return false; }
-  // 用 AudioContext 播放（不受 WAV 头部格式问题影响）
+async function playAudioBlob(data, rate) {
+  if (!data) return false;
   try {
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') await ctx.resume();
-    const audioBuf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    let audioBuf;
+    // 新 PCM 格式
+    if (data.p) {
+      const pcm = data.p, sr = data.sr || 32000, ch = data.ch || 1;
+      const frames = pcm.length / (ch * 2);
+      audioBuf = ctx.createBuffer(ch, frames, sr);
+      for (let c = 0; c < ch; c++) {
+        const cd = audioBuf.getChannelData(c);
+        for (let i = 0; i < frames; i++) {
+          const byteOff = (i * ch + c) * 2;
+          const u16 = pcm[byteOff] | (pcm[byteOff + 1] << 8);
+          cd[i] = (u16 > 32767 ? u16 - 65536 : u16) / 32768;
+        }
+      }
+    } else if (data.size >= 100) {
+      // 旧 Blob 格式（WAV）
+      audioBuf = await ctx.decodeAudioData(await data.arrayBuffer());
+    } else return false;
     const src = ctx.createBufferSource();
     src.buffer = audioBuf;
     src.playbackRate.value = rate;
@@ -667,14 +683,14 @@ async function playAudioBlob(blob, rate) {
     gain.gain.value = parseFloat(volumeRange.value);
     src.connect(gain);
     gain.connect(ctx.destination);
-    if (currentAudioSrc) { try { currentAudioSrc.stop(); } catch {} }
+    if (currentAudioSrc) try { currentAudioSrc.stop(); } catch {}
     currentAudioSrc = src;
     return new Promise(resolve => {
       src.onended = () => { currentAudioSrc = null; resolve(true); };
       src.start();
     });
   } catch (e) {
-    console.warn('playAudioBlob decode error:', e.message);
+    console.warn('playAudioBlob error:', e.message);
     return false;
   }
 }
@@ -839,7 +855,7 @@ preprocessBtn.addEventListener('click', async () => {
             od.setUint32(40, slice.length, true);
             out.set(slice, 44);
             if (cacheAvailable) {
-              await ttsCache.set(wtext, new Blob([out], { type: 'audio/wav' }));
+              await ttsCache.set(wtext, { p: slice.slice(0), sr, ch, bits: 16 });
               cached++;
             }
           }
