@@ -323,8 +323,9 @@ async function playSongSlice(startMs, endMs, rate) {
   if (!songData) return false;
   const { pcm, sr, ch, bits } = songData;
   const bytesPerMs = sr * ch * (bits / 8) / 1000;
-  let sb = Math.floor(startMs * bytesPerMs);
-  let eb = Math.ceil(endMs * bytesPerMs);
+  const pad = 30;
+  let sb = Math.floor(Math.max(0, startMs - pad) * bytesPerMs);
+  let eb = Math.ceil((endMs + pad) * bytesPerMs);
   sb -= sb % 2; eb -= eb % 2;
   if (eb <= sb || sb >= pcm.length) return false;
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
@@ -1005,14 +1006,15 @@ function splitSentences(text) {
   const sents = []; let cur = '';
   for (const ch of text) {
     cur += ch;
-    if (/[。！？.!?\n\r]/.test(ch) && cur.trim()) { sents.push(cur.trim()); cur = ''; }
+    if (/[。！？.!?\n\r]/.test(ch) && cur.trim()) { sents.push(cur); cur = ''; }
   }
-  if (cur.trim()) sents.push(cur.trim());
+  if (cur.trim()) sents.push(cur);
   return sents.length ? sents : [text];
 }
 
 function renderSentences(text) {
-  const sents = splitSentences(text);
+  const trimmed = text.trim();
+  const sents = splitSentences(trimmed);
   segContainer.innerHTML = '';
   currentSentences = [];
   let globalPos = 0;
