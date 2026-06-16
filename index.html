@@ -311,7 +311,7 @@ let proxyRetryAt = 0;
 let speakCooldown = false;
 
 // 整首歌 PCM 缓存
-let songData = null; // { sentPcm, wordPcm, sentCharTime, wordCharTime, sr, ch, bits, text }
+let songData = null; // { pcm, charTime, sr, ch, bits, text }
 
 function hashText(text) {
   let h = 0;
@@ -331,12 +331,9 @@ async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate) {
   return playAudioBlob({ p: slice, sr, ch, bits }, rate);
 }
 
-async function playCharRange(startChar, endChar, rate, useWordPcm) {
-  if (!songData) return false;
-  const pcm = useWordPcm ? songData.wordPcm : songData.sentPcm;
-  const charTime = useWordPcm ? songData.wordCharTime : songData.sentCharTime;
-  if (!pcm || !charTime) return false;
-  const { sr, ch, bits } = songData;
+async function playCharRange(startChar, endChar, rate) {
+  if (!songData || !songData.charTime) return false;
+  const { pcm, charTime, sr, ch, bits } = songData;
   let startMs = null, endMs = null;
   for (let i = startChar; i < endChar; i++) {
     if (charTime[i]) {
@@ -808,16 +805,9 @@ preprocessBtn.addEventListener('click', async () => {
   // 检查 IndexedDB 缓存
   if (cacheAvailable) {
     const cached = await ttsCache.get(hkey);
-    if (cached && cached.sentPcm && cached.wordPcm && cached.sentCharTime && cached.wordCharTime) {
-      songData = { sentPcm: cached.sentPcm, wordPcm: cached.wordPcm, sentCharTime: cached.sentCharTime, wordCharTime: cached.wordCharTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
-      statusBar.textContent = `✅ 从缓存加载`;
-      preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
-      await updateCacheStat();
-      return;
-    }
     if (cached && cached.pcm && cached.charTime) {
-      songData = { sentPcm: cached.pcm, wordPcm: cached.pcm, sentCharTime: cached.charTime, wordCharTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
-      statusBar.textContent = `✅ 从旧缓存加载`;
+      songData = { pcm: cached.pcm, charTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
+      statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
       return;
@@ -854,35 +844,29 @@ preprocessBtn.addEventListener('click', async () => {
       throw new Error(msg);
     }
     const preData = await resp.json();
-    if (!preData.sent_audio_hex || !preData.word_audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
+    if (!preData.char_time || !preData.audio_hex) { statusBar.textContent = '❌ 预处理数据无效'; return; }
 
-    preprocessFill.style.width = '30%';
+    preprocessFill.style.width = '50%';
     statusBar.textContent = '⚡ 解码音频...';
 
-    function decodePcm(hex, dataOff, dataSize) {
-      const len = hex.length >> 1;
-      const wav = new Uint8Array(len);
-      for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
-      return wav.slice(dataOff, dataOff + dataSize);
-    }
-
+    const hex = preData.audio_hex;
+    const len = hex.length >> 1;
+    const wav = new Uint8Array(len);
+    for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
     const sr = preData.sr || 32000, ch = preData.ch || 1, bits = preData.bits || 16;
-    const sentPcm = decodePcm(preData.sent_audio_hex, preData.sent_off, preData.sent_size);
-
-    preprocessFill.style.width = '60%';
-    statusBar.textContent = '⚡ 解码词版音频...';
-
-    const wordPcm = decodePcm(preData.word_audio_hex, preData.word_off, preData.word_size);
+    const dataOff = preData.data_off || 44;
+    const dataSize = preData.data_size || (wav.length - dataOff);
+    const pcm = wav.slice(dataOff, dataOff + dataSize);
 
     preprocessFill.style.width = '80%';
-    songData = { sentPcm, wordPcm, sentCharTime: preData.sent_char_time, wordCharTime: preData.word_char_time, sr, ch, bits, text };
+    songData = { pcm, charTime: preData.char_time, sr, ch, bits, text };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { sentPcm, wordPcm, sentCharTime: preData.sent_char_time, wordCharTime: preData.word_char_time, sr, ch, bits });
+      await ttsCache.set(hkey, { pcm, charTime: preData.char_time, sr, ch, bits });
     }
 
     preprocessFill.style.width = '100%';
-    statusBar.textContent = `✅ 已缓存 (句${(sentPcm.length/1024).toFixed(0)}KB + 词${(wordPcm.length/1024).toFixed(0)}KB)`;
+    statusBar.textContent = `✅ 已缓存 (${(pcm.length/1024).toFixed(0)}KB PCM)`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
@@ -918,17 +902,13 @@ document.getElementById('debugTtsBtn').addEventListener('click', async () => {
 // 调试 charTime 对齐
 document.getElementById('debugCharTimeBtn').addEventListener('click', () => {
   if (!songData) { showToast('请先预处理'); return; }
-  const { sentCharTime, wordCharTime, sentPcm, wordPcm, sr, text } = songData;
-  const sDur = sentPcm ? (sentPcm.length / (sr * 2) * 1000).toFixed(0) : '?';
-  const wDur = wordPcm ? (wordPcm.length / (sr * 2) * 1000).toFixed(0) : '?';
-  const lines = [`原文(${text.length}字): ${text.slice(0, 40)}${text.length > 40 ? '...' : ''}`,
-    `句版: ${sDur}ms PCM=${(sentPcm?.length/1024).toFixed(0)}KB, charTime有${sentCharTime?.filter(Boolean).length || 0}/${text.length}字`,
-    `词版: ${wDur}ms PCM=${(wordPcm?.length/1024).toFixed(0)}KB, charTime有${wordCharTime?.filter(Boolean).length || 0}/${text.length}字`];
-  const sampleChars = [...text].slice(0, 20);
+  const { charTime, pcm, sr, text } = songData;
+  const dur = pcm ? (pcm.length / (sr * 2) * 1000).toFixed(0) : '?';
+  const lines = [`原文(${text.length}字): ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
+    `音频: ${dur}ms, PCM=${(pcm?.length/1024).toFixed(0)}KB, charTime有${charTime?.filter(Boolean).length || 0}/${text.length}字`];
   for (let i = 0; i < Math.min(20, text.length); i++) {
-    const sc = sentCharTime?.[i];
-    const wc = wordCharTime?.[i];
-    lines.push(`[${i}] '${text[i]}' 句=${sc ? sc[0].toFixed(0)+'-'+sc[1].toFixed(0)+'ms' : '∅'} 词=${wc ? wc[0].toFixed(0)+'-'+wc[1].toFixed(0)+'ms' : '∅'}`);
+    const ct = charTime?.[i];
+    lines.push(`[${i}] '${text[i]}' → ${ct ? ct[0].toFixed(0)+'-'+ct[1].toFixed(0)+'ms' : '∅'}`);
   }
   const info = lines.join('\n');
   console.log('charTime debug:\n' + info);
@@ -1125,7 +1105,7 @@ async function playSentence(si) {
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), false);
+    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value));
     if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
@@ -1145,7 +1125,7 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, 1.0, true);
+    const ok = await playCharRange(w.start, w.end, 1.0);
     if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));

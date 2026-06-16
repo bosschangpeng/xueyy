@@ -173,44 +173,28 @@ async function buildCharTime(subtitle, textMapping) {
   return charTime;
 }
 
-// ── 预处理：两份音频（原速句版 + 慢速词版） ──
+// ── 预处理：一份慢速音频，字幕映射回原文位置 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
 
   const sentenceText = addSentencePauses(text);
   const textMapping = buildTextMapping(text, sentenceText);
 
-  const [sentData, wordData] = await Promise.all([
-    minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 1.0 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
-    minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 0.85 }, { format: 'wav', subtitle_enable: true, subtitle_type: 'word' }),
-  ]);
+  const data = await minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 0.85 }, {
+    format: 'wav', subtitle_enable: true, subtitle_type: 'word',
+  });
 
-  const sentHex = sentData.data?.audio || '';
-  const wordHex = wordData.data?.audio || '';
-  const sentWav = parseWavHeader(sentHex);
-  const wordWav = parseWavHeader(wordHex);
+  const hex = data.data?.audio || '';
+  const wav = parseWavHeader(hex);
 
-  let sentSubtitle = null, wordSubtitle = null;
-  if (sentData.data?.subtitle_file) {
-    const r = await fetch(sentData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
-    sentSubtitle = await r.json();
+  let subtitle = null;
+  if (data.data?.subtitle_file) {
+    const r = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
+    subtitle = await r.json();
   }
-  if (wordData.data?.subtitle_file) {
-    const r = await fetch(wordData.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
-    wordSubtitle = await r.json();
-  }
+  const charTime = await buildCharTime(subtitle, textMapping);
 
-  const sentCharTime = await buildCharTime(sentSubtitle, textMapping);
-  const wordCharTime = await buildCharTime(wordSubtitle, textMapping);
-
-  return {
-    sent_audio_hex: sentHex, word_audio_hex: wordHex,
-    sent_char_time: sentCharTime, word_char_time: wordCharTime,
-    sr: sentWav.wavSr, ch: sentWav.wavCh, bits: sentWav.wavBits,
-    sent_off: sentWav.pcmOff, sent_size: sentWav.pcmSize,
-    word_off: wordWav.pcmOff, word_size: wordWav.pcmSize,
-    text,
-  };
+  return { char_time: charTime, sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits, data_off: wav.pcmOff, data_size: wav.pcmSize, text, audio_hex: hex };
 }
 
 
