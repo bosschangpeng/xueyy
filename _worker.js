@@ -351,7 +351,7 @@ function bestWordRange(idx, itemIdx, itemRange, word, cursor) {
   return findTextRange(idx, expected, Math.max(cursor || 0, itemRange?.start || 0));
 }
 
-function applyTimedRange(charTime, range, timeBegin, timeEnd) {
+function applyTimedRange(charTime, sources, range, timeBegin, timeEnd, sourceLabel) {
   if (!range || !Number.isFinite(timeBegin) || !Number.isFinite(timeEnd) || timeEnd <= timeBegin) return 0;
   const start = Math.max(0, range.start);
   const end = Math.min(charTime.length, range.end);
@@ -364,12 +364,13 @@ function applyTimedRange(charTime, range, timeBegin, timeEnd) {
       timeBegin + ((i - start) / span) * dur,
       timeBegin + ((i - start + 1) / span) * dur
     ];
+    if (sources) sources[i] = sourceLabel || 'word';
     n++;
   }
   return n;
 }
 
-function fillCharTimeGaps(charTime, audioDurationMs) {
+function fillCharTimeGaps(charTime, audioDurationMs, sources) {
   const known = [];
   for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
   if (!known.length) return;
@@ -377,7 +378,10 @@ function fillCharTimeGaps(charTime, audioDurationMs) {
   const first = known[0];
   if (first > 0 && charTime[first][0] > 0) {
     const dur = charTime[first][0];
-    for (let i = 0; i < first; i++) charTime[i] = [(i / first) * dur, ((i + 1) / first) * dur];
+    for (let i = 0; i < first; i++) {
+      charTime[i] = [(i / first) * dur, ((i + 1) / first) * dur];
+      if (sources) sources[i] = 'lead';
+    }
   }
 
   for (let k = 0; k < known.length - 1; k++) {
@@ -392,6 +396,7 @@ function fillCharTimeGaps(charTime, audioDurationMs) {
         begin + ((i - a - 1) / steps) * (end - begin),
         begin + ((i - a) / steps) * (end - begin)
       ];
+      if (sources) sources[i] = 'gap';
     }
   }
 
@@ -404,6 +409,7 @@ function fillCharTimeGaps(charTime, audioDurationMs) {
         begin + ((i - last - 1) / tail) * (audioDurationMs - begin),
         begin + ((i - last) / tail) * (audioDurationMs - begin)
       ];
+      if (sources) sources[i] = 'tail';
     }
   }
 }
@@ -411,6 +417,7 @@ function fillCharTimeGaps(charTime, audioDurationMs) {
 async function buildCharTime(subtitle, text, audioDurationMs) {
   const idx = buildTextIndex(text);
   const charTime = new Array(idx.chars.length);
+  const sources = new Array(idx.chars.length);
   const items = Array.isArray(subtitle) ? subtitle : [];
   let cursor = 0;
 
@@ -430,20 +437,21 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
         tb = item.time_begin + ((range.start - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
         te = item.time_begin + ((range.end - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
       }
-      if (applyTimedRange(charTime, range, tb, te)) {
+      const sourceLabel = (w.time_begin != null && w.time_end != null && w.time_end > w.time_begin) ? 'word' : 'word_est';
+      if (applyTimedRange(charTime, sources, range, tb, te, sourceLabel)) {
         addedWords++;
         cursor = Math.max(cursor, range.end);
       }
     }
 
     if (!addedWords && itemRange && item.time_begin != null && item.time_end != null) {
-      applyTimedRange(charTime, itemRange, item.time_begin, item.time_end);
+      applyTimedRange(charTime, sources, itemRange, item.time_begin, item.time_end, 'item');
       cursor = Math.max(cursor, itemRange.end);
     }
   }
 
-  fillCharTimeGaps(charTime, audioDurationMs);
-  return charTime;
+  fillCharTimeGaps(charTime, audioDurationMs, sources);
+  return { charTime, sources };
 }
 
 // ── 预处理：直接合成当前句/片段，停顿由前端拼接真实静音 ──
@@ -464,13 +472,18 @@ async function preprocessTts(env, body) {
   }
   const bytesPerMs = wav.wavSr * wav.wavCh * (wav.wavBits / 8) / 1000;
   const audioDurationMs = wav.pcmSize && bytesPerMs ? wav.pcmSize / bytesPerMs : 0;
-  const charTime = await buildCharTime(subtitle, text, audioDurationMs);
+  const built = await buildCharTime(subtitle, text, audioDurationMs);
+  const charTime = built.charTime;
+  const charSource = built.sources;
   const covered = charTime.filter(Boolean).length;
+  const sourceCounts = {};
+  for (const s of charSource) if (s) sourceCounts[s] = (sourceCounts[s] || 0) + 1;
 
   return {
     char_time: charTime,
+    char_source: charSource,
     char_count: Array.from(text || '').length,
-    coverage: { covered, total: charTime.length },
+    coverage: { covered, total: charTime.length, sources: sourceCounts },
     sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
     data_off: wav.pcmOff, data_size: wav.pcmSize,
     text, audio_hex: hex

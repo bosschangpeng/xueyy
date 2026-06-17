@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v6';
+const ALIGN_SCHEMA_VERSION = 'ct_v7';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -791,7 +791,8 @@ function parsePreprocessAudio(pd) {
     sr: pd.sr || 32000,
     ch: pd.ch || 1,
     bits: pd.bits || 16,
-    charTime: pd.char_time || []
+    charTime: pd.char_time || [],
+    charSource: pd.char_source || []
   };
 }
 
@@ -938,13 +939,25 @@ function buildContextClipUnits() {
   return units;
 }
 
+function isCharRangeWordTimed(clip, start, end) {
+  if (!clip?.charTime || !clip?.charSource) return false;
+  if (start < 0 || end > clip.charTime.length || end <= start) return false;
+  for (let i = start; i < end; i++) {
+    if (!clip.charTime[i]) return false;
+    if (clip.charSource[i] !== 'word' && clip.charSource[i] !== 'word_est') return false;
+  }
+  return true;
+}
+
 async function ensureContextClipCached(unit) {
   if (!unit || !cacheAvailable) return false;
   const key = contextClipCacheKey(unit);
   const cached = await ttsCache.get(key);
-  if (cached) return true;
+  if (cached) return isCharRangeWordTimed(cached, cached.targetStart, cached.targetEnd);
   const clip = await fetchPreprocessClip(unit.contextText);
-  await ttsCache.set(key, { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText });
+  const stored = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
+  if (!isCharRangeWordTimed(stored, stored.targetStart, stored.targetEnd)) return false;
+  await ttsCache.set(key, stored);
   return true;
 }
 
@@ -954,8 +967,8 @@ async function preloadContextClips(units, onProgress) {
   for (let i = 0; i < units.length; i++) {
     const unit = units[i];
     try {
-      await ensureContextClipCached(unit);
-      ok++;
+      if (await ensureContextClipCached(unit)) ok++;
+      else fail++;
     } catch (e) {
       fail++;
       console.warn('[context clip] failed', unit.text, unit.contextText, e.message);
@@ -974,6 +987,10 @@ async function playContextSegmentClip(unit, rate) {
       clip = await fetchPreprocessClip(unit.contextText);
       clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
       if (cacheAvailable) await ttsCache.set(key, clip);
+    }
+    if (!isCharRangeWordTimed(clip, clip.targetStart, clip.targetEnd)) {
+      console.warn('[context segment clip] low confidence', unit.text, unit.contextText, clip.charSource?.slice(clip.targetStart, clip.targetEnd));
+      return false;
     }
     const ok = await playPcmCharRange(clip, clip.targetStart, clip.targetEnd, rate, {
       guardNeighbors: true,
