@@ -122,7 +122,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
     <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
       <span id="preprocessWarn" style="font-size:.75rem;color:#e67e22;margin-right:8px">💡 建议预处理</span>
       <div class="preprocess-bar" id="preprocessBar"><div class="fill" id="preprocessFill"></div></div>
-      <span id="preprocessStat" style="font-size:.72rem;color:var(--text-light);margin-left:8px;white-space:nowrap">缓存: <span id="cacheCount">0</span>首 <button id="clearCacheBtn" class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.7rem;margin-left:6px;line-height:1.3">清缓存</button></span>
+      <span id="preprocessStat" style="font-size:.72rem;color:var(--text-light);margin-left:8px;white-space:nowrap">缓存: <span id="cacheCount">0</span>项 <button id="clearCacheBtn" class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.7rem;margin-left:6px;line-height:1.3">清缓存</button></span>
       <button id="debugTtsBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:6px;line-height:1.3" title="测试Worker到MiniMax连通性">🔧</button>
       <button id="debugCharTimeBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:2px;line-height:1.3" title="调试charTime对齐">🎯</button>
     </div>
@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v4';
+const ALIGN_SCHEMA_VERSION = 'ct_v5';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -340,6 +340,10 @@ function hashText(text) {
   let h = 0;
   for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0;
   return 'song_' + (h >>> 0).toString(36);
+}
+
+function clipCacheKey(text) {
+  return 'clip_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + text);
 }
 
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
@@ -812,8 +816,9 @@ async function speakOneCached(text, rate) {
     if (!voice) return false;
     return speakOne(text, rate, 1, voice, 0, 1);
   }
+  const cacheKey = clipCacheKey(text);
   if (cacheAvailable) {
-    const cached = await ttsCache.get(text);
+    const cached = await ttsCache.get(cacheKey);
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
       const ok = await playAudioBlob(cached, rate);
@@ -823,7 +828,7 @@ async function speakOneCached(text, rate) {
   }
   try {
     const blob = await fetchTtsFromMiniMax(text);
-    if (cacheAvailable) await ttsCache.set(text, blob);
+    if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     statusBar.textContent = `🔊: "${text}" (在线)`;
     await playAudioBlob(blob, rate);
     return true;
@@ -832,6 +837,23 @@ async function speakOneCached(text, rate) {
     const voice = await resolveVoice();
     if (!voice) return false;
     return speakOne(text, rate, 1, voice, 0, 1);
+  }
+}
+
+async function playSegmentClip(text, rate) {
+  if (!onlineTtsEnabled || !text) return false;
+  const cacheKey = clipCacheKey(text);
+  try {
+    let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
+    if (!blob) {
+      blob = await fetchTtsFromMiniMax(text);
+      if (cacheAvailable) await ttsCache.set(cacheKey, blob);
+    }
+    statusBar.textContent = `🔊: "${text}" (精确clip)`;
+    return await playAudioBlob(blob, rate);
+  } catch (e) {
+    console.warn('[segment clip] failed', text, e.message);
+    return false;
   }
 }
 
@@ -850,6 +872,34 @@ function extractUnique(text) {
   return unique;
 }
 
+async function ensureSegmentClipCached(text) {
+  if (!text || !cacheAvailable) return false;
+  const key = clipCacheKey(text);
+  const cached = await ttsCache.get(key);
+  if (cached) return true;
+  const blob = await fetchTtsFromMiniMax(text);
+  await ttsCache.set(key, blob);
+  return true;
+}
+
+async function preloadSegmentClips(texts, onProgress) {
+  if (!cacheAvailable || !onlineTtsEnabled) return { ok: 0, fail: 0, total: 0 };
+  let ok = 0, fail = 0;
+  const targets = texts.filter(Boolean);
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    try {
+      await ensureSegmentClipCached(t);
+      ok++;
+    } catch (e) {
+      fail++;
+      console.warn('[preprocess clip] failed', t, e.message);
+    }
+    if (onProgress) onProgress(i + 1, targets.length, ok, fail);
+  }
+  return { ok, fail, total: targets.length };
+}
+
 let preprocessing = false;
 
 async function updateCacheStat() {
@@ -857,7 +907,7 @@ async function updateCacheStat() {
   if (!cacheAvailable) { cacheCountEl.textContent = '不可用'; return; }
   const n = await ttsCache.count();
   cacheCountEl.textContent = n;
-  preprocessStat.title = `缓存 ${n} 首歌`;
+  preprocessStat.title = `缓存 ${n} 项`;
 }
 
 preprocessBtn.addEventListener('click', async () => {
@@ -982,9 +1032,18 @@ preprocessBtn.addEventListener('click', async () => {
       await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sentenceRanges, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION });
     }
 
+    preprocessFill.style.width = '92%';
+    const clipTexts = extractUnique(text);
+    const clipResult = await preloadSegmentClips(clipTexts, (done, total, ok, fail) => {
+      const pct = 92 + Math.round(7 * done / Math.max(1, total));
+      preprocessFill.style.width = pct + '%';
+      statusBar.textContent = `⚡ 准备字词发音 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
+    });
+
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳)`;
+    const clipMsg = clipResult.total ? `, 字词clip ${clipResult.ok}/${clipResult.total}` : '';
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳${clipMsg})`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
@@ -1283,7 +1342,10 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), {
+    const rate = parseFloat(speedRange.value);
+    const clipOk = await playSegmentClip(w.text, rate);
+    if (clipOk) return;
+    const ok = await playCharRange(w.start, w.end, rate, {
       guardNeighbors: true,
       neighborBorrowMs: charLen(w.text) <= 1 ? 42 : 34,
       prePadMs: charLen(w.text) <= 1 ? 42 : 34,
