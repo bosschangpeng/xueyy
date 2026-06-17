@@ -133,50 +133,239 @@ function parseWavHeader(hex) {
   return { pcmOff, pcmSize, wavSr, wavCh, wavBits };
 }
 
-async function buildCharTime(subtitle, textMapping) {
-  const charTime = [];
-  const items = Array.isArray(subtitle) ? subtitle : [];
-  for (const item of items) {
-    const twords = item.timestamped_words || [];
-    if (!twords.length) continue;
-    const totalChars = (item.text_end || 0) - (item.text_begin || 0);
-    const totalTime = (item.time_end || 0) - (item.time_begin || 0);
-    if (totalChars <= 0 || totalTime <= 0) continue;
-    const sBegin = item.text_begin || 0;
-    for (const w of twords) {
-      const wBegin = w.word_begin - sBegin;
-      const wEnd = w.word_end - sBegin;
-      const wChars = wEnd - wBegin;
-      if (wChars <= 0) continue;
-      let wTimeBegin, wTimeEnd;
-      if (w.time_begin != null && w.time_end != null) {
-        wTimeBegin = w.time_begin; wTimeEnd = w.time_end;
-      } else {
-        wTimeBegin = item.time_begin + (wBegin / totalChars) * totalTime;
-        wTimeEnd = item.time_begin + (wEnd / totalChars) * totalTime;
-      }
-      const wTime = wTimeEnd - wTimeBegin;
-      if (wTime <= 0) continue;
-      for (let ci = wBegin; ci < wEnd; ci++) {
-        const modPos = sBegin + ci;
-        const origPos = textMapping ? textMapping[modPos] : modPos;
-        if (origPos == null || origPos < 0) continue;
-        charTime[origPos] = [
-          wTimeBegin + ((ci - wBegin) / wChars) * wTime,
-          wTimeBegin + ((ci - wBegin + 1) / wChars) * wTime
-        ];
+function buildTextIndex(text) {
+  const chars = Array.from(text || '');
+  const utf16ToCp = new Array((text || '').length + 1);
+  let utf16 = 0;
+  utf16ToCp[0] = 0;
+  for (let i = 0; i < chars.length; i++) {
+    for (let j = 0; j < chars[i].length; j++) utf16ToCp[utf16 + j] = i;
+    utf16 += chars[i].length;
+    utf16ToCp[utf16] = i + 1;
+  }
+  for (let i = 1; i < utf16ToCp.length; i++) if (utf16ToCp[i] == null) utf16ToCp[i] = utf16ToCp[i - 1];
+
+  const utf8ToCp = [0];
+  const enc = new TextEncoder();
+  let byteOff = 0;
+  for (let i = 0; i < chars.length; i++) {
+    const n = enc.encode(chars[i]).length;
+    for (let j = 0; j < n; j++) utf8ToCp[byteOff + j] = i;
+    byteOff += n;
+    utf8ToCp[byteOff] = i + 1;
+  }
+  for (let i = 1; i < utf8ToCp.length; i++) if (utf8ToCp[i] == null) utf8ToCp[i] = utf8ToCp[i - 1];
+
+  const searchChars = [];
+  const searchMap = [];
+  for (let i = 0; i < chars.length; i++) {
+    if (/\s/u.test(chars[i])) continue;
+    searchChars.push(chars[i].toLowerCase());
+    searchMap.push(i);
+  }
+  return { text: text || '', chars, utf16ToCp, utf8ToCp, searchText: searchChars.join(''), searchMap };
+}
+
+function compactText(s) {
+  return Array.from(String(s || '')).filter(ch => !/\s/u.test(ch)).join('').toLowerCase();
+}
+
+function scoreTextMatch(piece, expected) {
+  const a = String(piece || '');
+  const b = String(expected || '');
+  if (!b) return 0;
+  if (a === b) return 8;
+  if (a.trim() === b.trim()) return 7;
+  const ca = compactText(a);
+  const cb = compactText(b);
+  if (!ca || !cb) return 0;
+  if (ca === cb) return 6;
+  if (ca.includes(cb) || cb.includes(ca)) return 3;
+  return 0;
+}
+
+function cpSlice(idx, begin, end) {
+  return idx.chars.slice(begin, end).join('');
+}
+
+function rangeFromUnit(idx, begin, end, unit) {
+  if (!Number.isFinite(begin) || !Number.isFinite(end) || end <= begin) return null;
+  begin = Math.trunc(begin);
+  end = Math.trunc(end);
+  if (unit === 'cp') {
+    if (begin < 0 || end > idx.chars.length) return null;
+    return { start: begin, end };
+  }
+  const map = unit === 'utf8' ? idx.utf8ToCp : idx.utf16ToCp;
+  if (begin < 0 || end >= map.length) return null;
+  const start = map[begin];
+  const outEnd = map[end];
+  if (start == null || outEnd == null || outEnd <= start) return null;
+  return { start, end: outEnd };
+}
+
+function offsetCandidates(idx, begin, end, expected, source) {
+  const out = [];
+  for (const unit of ['cp', 'utf16', 'utf8']) {
+    const range = rangeFromUnit(idx, begin, end, unit);
+    if (!range) continue;
+    const score = scoreTextMatch(cpSlice(idx, range.start, range.end), expected);
+    if (score >= 3) out.push({ ...range, score, source: source + ':' + unit });
+  }
+  return out;
+}
+
+function lowerSearchPos(idx, cp) {
+  let lo = 0, hi = idx.searchMap.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (idx.searchMap[mid] < cp) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function findTextRange(idx, expected, minCp) {
+  const needle = compactText(expected);
+  if (!needle) return null;
+  const pos = idx.searchText.indexOf(needle, lowerSearchPos(idx, minCp || 0));
+  if (pos < 0) return null;
+  const start = idx.searchMap[pos];
+  const end = idx.searchMap[pos + needle.length - 1] + 1;
+  return { start, end, score: 4, source: 'search' };
+}
+
+function bestItemRange(idx, item, cursor) {
+  const expected = item.text || '';
+  let candidates = [];
+  if (item.text_begin != null && item.text_end != null) {
+    candidates = candidates.concat(offsetCandidates(idx, item.text_begin, item.text_end, expected, 'item'));
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  if (candidates[0]) return candidates[0];
+  return findTextRange(idx, expected, cursor || 0);
+}
+
+function bestWordRange(idx, itemIdx, itemRange, word, cursor) {
+  const expected = word.word || '';
+  let candidates = [];
+  if (word.word_begin != null && word.word_end != null) {
+    candidates = candidates.concat(offsetCandidates(idx, word.word_begin, word.word_end, expected, 'word'));
+    if (itemIdx && itemRange) {
+      for (const c of offsetCandidates(itemIdx, word.word_begin, word.word_end, expected, 'word_rel_item')) {
+        candidates.push({
+          start: itemRange.start + c.start,
+          end: itemRange.start + c.end,
+          score: c.score,
+          source: c.source
+        });
       }
     }
   }
+  if (itemRange) {
+    for (const c of candidates) {
+      if (c.start >= itemRange.start && c.end <= itemRange.end) c.score += 2;
+      else if (c.end <= itemRange.start || c.start >= itemRange.end) c.score -= 3;
+    }
+  }
+  candidates = candidates.filter(c => c.score >= 3 && c.end > c.start);
+  candidates.sort((a, b) => b.score - a.score);
+  if (candidates[0]) return candidates[0];
+  return findTextRange(idx, expected, Math.max(cursor || 0, itemRange?.start || 0));
+}
+
+function applyTimedRange(charTime, range, timeBegin, timeEnd) {
+  if (!range || !Number.isFinite(timeBegin) || !Number.isFinite(timeEnd) || timeEnd <= timeBegin) return 0;
+  const start = Math.max(0, range.start);
+  const end = Math.min(charTime.length, range.end);
+  const span = end - start;
+  if (span <= 0) return 0;
+  const dur = timeEnd - timeBegin;
+  let n = 0;
+  for (let i = start; i < end; i++) {
+    charTime[i] = [
+      timeBegin + ((i - start) / span) * dur,
+      timeBegin + ((i - start + 1) / span) * dur
+    ];
+    n++;
+  }
+  return n;
+}
+
+function fillCharTimeGaps(charTime, audioDurationMs) {
   const known = [];
   for (let i = 0; i < charTime.length; i++) if (charTime[i]) known.push(i);
+  if (!known.length) return;
+
+  const first = known[0];
+  if (first > 0 && charTime[first][0] > 0) {
+    const dur = charTime[first][0];
+    for (let i = 0; i < first; i++) charTime[i] = [(i / first) * dur, ((i + 1) / first) * dur];
+  }
+
   for (let k = 0; k < known.length - 1; k++) {
     const a = known[k], b = known[k + 1];
     if (b - a <= 1) continue;
-    const total = charTime[b][0] - charTime[a][0], steps = b - a;
-    for (let j = a + 1; j < b; j++)
-      charTime[j] = [charTime[a][0] + ((j - a) / steps) * total, charTime[a][0] + ((j - a + 1) / steps) * total];
+    const begin = charTime[a][1];
+    const end = charTime[b][0];
+    if (!Number.isFinite(begin) || !Number.isFinite(end) || end <= begin) continue;
+    const steps = b - a;
+    for (let i = a + 1; i < b; i++) {
+      charTime[i] = [
+        begin + ((i - a - 1) / steps) * (end - begin),
+        begin + ((i - a) / steps) * (end - begin)
+      ];
+    }
   }
+
+  const last = known[known.length - 1];
+  if (audioDurationMs && last < charTime.length - 1 && audioDurationMs > charTime[last][1]) {
+    const begin = charTime[last][1];
+    const tail = charTime.length - 1 - last;
+    for (let i = last + 1; i < charTime.length; i++) {
+      charTime[i] = [
+        begin + ((i - last - 1) / tail) * (audioDurationMs - begin),
+        begin + ((i - last) / tail) * (audioDurationMs - begin)
+      ];
+    }
+  }
+}
+
+async function buildCharTime(subtitle, text, audioDurationMs) {
+  const idx = buildTextIndex(text);
+  const charTime = new Array(idx.chars.length);
+  const items = Array.isArray(subtitle) ? subtitle : [];
+  let cursor = 0;
+
+  for (const item of items) {
+    const itemRange = bestItemRange(idx, item, cursor);
+    const itemIdx = item.text ? buildTextIndex(item.text) : null;
+    const twords = Array.isArray(item.timestamped_words) ? item.timestamped_words : [];
+    let addedWords = 0;
+
+    for (const w of twords) {
+      const range = bestWordRange(idx, itemIdx, itemRange, w, cursor);
+      if (!range) continue;
+      let tb = w.time_begin;
+      let te = w.time_end;
+      if ((tb == null || te == null || te <= tb) && itemRange && item.time_begin != null && item.time_end != null) {
+        const itemSpan = Math.max(1, itemRange.end - itemRange.start);
+        tb = item.time_begin + ((range.start - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
+        te = item.time_begin + ((range.end - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
+      }
+      if (applyTimedRange(charTime, range, tb, te)) {
+        addedWords++;
+        cursor = Math.max(cursor, range.end);
+      }
+    }
+
+    if (!addedWords && itemRange && item.time_begin != null && item.time_end != null) {
+      applyTimedRange(charTime, itemRange, item.time_begin, item.time_end);
+      cursor = Math.max(cursor, itemRange.end);
+    }
+  }
+
+  fillCharTimeGaps(charTime, audioDurationMs);
   return charTime;
 }
 
@@ -198,9 +387,19 @@ async function preprocessTts(env, body) {
     const r = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
     subtitle = await r.json();
   }
-  const charTime = await buildCharTime(subtitle, null);
+  const bytesPerMs = wav.wavSr * wav.wavCh * (wav.wavBits / 8) / 1000;
+  const audioDurationMs = wav.pcmSize && bytesPerMs ? wav.pcmSize / bytesPerMs : 0;
+  const charTime = await buildCharTime(subtitle, text, audioDurationMs);
+  const covered = charTime.filter(Boolean).length;
 
-  return { char_time: charTime, sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits, data_off: wav.pcmOff, data_size: wav.pcmSize, text, audio_hex: hex };
+  return {
+    char_time: charTime,
+    char_count: Array.from(text || '').length,
+    coverage: { covered, total: charTime.length },
+    sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
+    data_off: wav.pcmOff, data_size: wav.pcmSize,
+    text, audio_hex: hex
+  };
 }
 
 

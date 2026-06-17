@@ -312,6 +312,15 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
+const ALIGN_SCHEMA_VERSION = 'ct_v2';
+
+function textChars(text) {
+  return Array.from(text || '');
+}
+
+function charLen(text) {
+  return textChars(text).length;
+}
 
 function hashText(text) {
   let h = 0;
@@ -319,19 +328,20 @@ function hashText(text) {
   return 'song_' + (h >>> 0).toString(36);
 }
 
-async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate) {
+async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
   const bytesPerMs = sr * ch * (bits / 8) / 1000;
-  const pad = 20;
+  const blockAlign = Math.max(1, ch * Math.ceil(bits / 8));
+  const pad = opts.padMs ?? 30;
   let sb = Math.floor(Math.max(0, startMs - pad) * bytesPerMs);
   let eb = Math.ceil((endMs + pad) * bytesPerMs);
-  sb -= sb % 2; eb -= eb % 2;
+  sb -= sb % blockAlign; eb -= eb % blockAlign;
   if (eb <= sb || sb >= pcm.length) return false;
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
   if (slice.length < 100) return false;
   return playAudioBlob({ p: slice, sr, ch, bits }, rate);
 }
 
-async function playCharRange(startChar, endChar, rate) {
+async function playCharRange(startChar, endChar, rate, opts = {}) {
   if (!songData || !songData.charTime) return false;
   const { pcm, charTime, sr, ch, bits } = songData;
   let startMs = null, endMs = null;
@@ -341,8 +351,17 @@ async function playCharRange(startChar, endChar, rate) {
       if (endMs === null || charTime[i][1] > endMs) endMs = charTime[i][1];
     }
   }
-  if (startMs === null || endMs === null || endMs <= startMs) return false;
-  return playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate);
+  if (startMs === null || endMs === null || endMs <= startMs) {
+    console.warn('[charTime] missing range', { startChar, endChar });
+    return false;
+  }
+  const minMs = opts.minMs ?? ((endChar - startChar) <= 1 ? 220 : 160);
+  if (endMs - startMs < minMs) {
+    const mid = (startMs + endMs) / 2;
+    startMs = Math.max(0, mid - minMs / 2);
+    endMs = mid + minMs / 2;
+  }
+  return playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts);
 }
 
 const SPEECH_PROXY = '/tts';
@@ -793,6 +812,7 @@ async function updateCacheStat() {
 preprocessBtn.addEventListener('click', async () => {
   if (preprocessing) return;
   const text = inputEl.value.trim();
+  const totalChars = charLen(text);
   if (!text) { showToast('请先输入文本'); return; }
 
   preprocessing = true;
@@ -800,13 +820,13 @@ preprocessBtn.addEventListener('click', async () => {
   preprocessFill.style.width = '0%';
   preprocessBtn.disabled = true;
 
-  const hkey = hashText(text);
+  const hkey = hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + text);
 
   // 检查 IndexedDB 缓存
   if (cacheAvailable) {
     const cached = await ttsCache.get(hkey);
-    if (cached && cached.pcm && cached.charTime) {
-      songData = { pcm: cached.pcm, charTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text };
+    if (cached && cached.pcm && cached.charTime && cached.alignVersion === ALIGN_SCHEMA_VERSION) {
+      songData = { pcm: cached.pcm, charTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
       statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
@@ -876,7 +896,7 @@ preprocessBtn.addEventListener('click', async () => {
         }
       }
       console.log(`批次${ci+1}: ${chunk.length}字, charTime覆盖${batchCovered}/${ct.length}, 音频${chunkDurationMs.toFixed(0)}ms`);
-      charOffset += chunk.length;
+      charOffset += charLen(chunk);
       timeOffsetMs += chunkDurationMs;
     }
 
@@ -889,10 +909,10 @@ preprocessBtn.addEventListener('click', async () => {
 
     preprocessFill.style.width = '90%';
     statusBar.textContent = '⚡ 缓存中...';
-    songData = { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, text };
+    songData = { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits });
+      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION });
     }
 
     preprocessFill.style.width = '100%';
@@ -934,23 +954,25 @@ document.getElementById('debugTtsBtn').addEventListener('click', async () => {
 document.getElementById('debugCharTimeBtn').addEventListener('click', () => {
   if (!songData) { showToast('请先预处理'); return; }
   const { charTime, pcm, sr, text } = songData;
+  const chars = textChars(text);
+  const totalChars = chars.length;
   const dur = pcm ? (pcm.length / (sr * 2) * 1000).toFixed(0) : '?';
   const covered = charTime ? charTime.filter(Boolean).length : 0;
-  const lines = [`原文(${text.length}字): ${text.slice(0, 40)}${text.length > 40 ? '...' : ''}`,
+  const lines = [`原文(${totalChars}字): ${chars.slice(0, 40).join('')}${totalChars > 40 ? '...' : ''}`,
     `音频: ${dur}ms, PCM=${(pcm?.length/1024).toFixed(0)}KB`,
     `charTime覆盖: ${covered}/${text.length} (${(covered/text.length*100).toFixed(0)}%)`];
 
   // 找出前10个空缺位置
   const gaps = [];
-  for (let i = 0; i < text.length && gaps.length < 10; i++) {
+  for (let i = 0; i < totalChars && gaps.length < 10; i++) {
     if (!charTime?.[i]) gaps.push(i);
   }
   if (gaps.length) lines.push(`空缺位置: ${gaps.join(', ')}${gaps.length >= 10 ? '...' : ''}`);
 
   // 显示前20字对齐详情
-  for (let i = 0; i < Math.min(20, text.length); i++) {
+  for (let i = 0; i < Math.min(20, totalChars); i++) {
     const ct = charTime?.[i];
-    lines.push(`[${i}] '${text[i]}' → ${ct ? ct[0].toFixed(0)+'-'+ct[1].toFixed(0)+'ms' : '∅'}`);
+    lines.push(`[${i}] '${chars[i]}' → ${ct ? ct[0].toFixed(0)+'-'+ct[1].toFixed(0)+'ms' : '∅'}`);
   }
 
   // 显示每个词的播放范围测试
@@ -1105,12 +1127,14 @@ function renderSentences(text) {
     const words = segmentText(sents[si]);
     let localPos = 0;
     for (const w of words) {
+      const wLen = charLen(w.text);
       w.start = globalPos + localPos;
-      w.end = globalPos + localPos + w.text.length;
-      localPos += w.text.length;
+      w.end = globalPos + localPos + wLen;
+      localPos += wLen;
     }
-    currentSentences.push({ text: sents[si], words, start: globalPos, end: globalPos + sents[si].length });
-    globalPos += sents[si].length;
+    const sentLen = charLen(sents[si]);
+    currentSentences.push({ text: sents[si], words, start: globalPos, end: globalPos + sentLen });
+    globalPos += sentLen;
     const group = document.createElement('div');
     group.className = 'sgroup';
     const hdr = document.createElement('div');
@@ -1167,7 +1191,7 @@ async function playSentence(si) {
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value));
+    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), { padMs: 50, minMs: 320 });
     if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
@@ -1187,7 +1211,7 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value));
+    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), { padMs: 45, minMs: charLen(w.text) <= 1 ? 220 : 180 });
     if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));
@@ -1232,7 +1256,7 @@ speakAllBtn.addEventListener('click', async () => {
       if (groups[si]) groups[si].classList.add('active');
       const hdrs = segContainer.querySelectorAll('.shdr');
       if (hdrs[si]) hdrs[si].classList.add('playing');
-      const ok = await playCharRange(s.start, s.end, rate);
+      const ok = await playCharRange(s.start, s.end, rate, { padMs: 50, minMs: 320 });
       if (!ok) await speak(s.text, rate);
       await new Promise(r => setTimeout(r, 100));
       clearHighlight();
