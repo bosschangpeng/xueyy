@@ -96,6 +96,74 @@ function addSentencePauses(text) {
   return text.replace(/<#[\d.]+#>$/, '');
 }
 
+function buildSpeechText(originalText) {
+  const sentencePause = '<#0.55#>';
+  const commaPause = '<#0.18#>';
+  const chars = Array.from(originalText || '');
+  const out = [];
+  const mapToOriginal = [];
+  let lastInsertedPause = false;
+
+  function append(s, origIndex) {
+    for (const ch of Array.from(s)) {
+      out.push(ch);
+      mapToOriginal.push(origIndex);
+    }
+  }
+
+  function appendPause(mark) {
+    if (lastInsertedPause) return;
+    append(mark, -1);
+    lastInsertedPause = true;
+  }
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    append(ch, i);
+
+    if (/[\r\n]/u.test(ch)) {
+      appendPause(sentencePause);
+      continue;
+    }
+    if (/[。！？!?]/u.test(ch)) {
+      appendPause(sentencePause);
+      continue;
+    }
+    if (/[，、；;：:]/u.test(ch)) {
+      appendPause(commaPause);
+      continue;
+    }
+
+    if (!/\s/u.test(ch)) lastInsertedPause = false;
+  }
+
+  while (out.length && mapToOriginal[mapToOriginal.length - 1] < 0) {
+    out.pop();
+    mapToOriginal.pop();
+  }
+
+  return { text: out.join(''), mapToOriginal };
+}
+
+function projectCharTimeToOriginal(speechCharTime, mapToOriginal, originalLength, audioDurationMs) {
+  const charTime = new Array(originalLength);
+  for (let i = 0; i < speechCharTime.length; i++) {
+    const orig = mapToOriginal[i];
+    if (orig == null || orig < 0 || orig >= originalLength || !speechCharTime[i]) continue;
+    const cur = charTime[orig];
+    if (!cur) {
+      charTime[orig] = speechCharTime[i];
+    } else {
+      charTime[orig] = [
+        Math.min(cur[0], speechCharTime[i][0]),
+        Math.max(cur[1], speechCharTime[i][1])
+      ];
+    }
+  }
+  fillCharTimeGaps(charTime, audioDurationMs);
+  return charTime;
+}
+
 // ── 构建「修改后文本位置 → 原文位置」映射 ──
 // addSentencePauses 插入的 <#0.5#>/<#0.2#> 会让 MiniMax 字幕的 text_begin/text_end 偏移，
 // 必须映射回原文位置，前端才能与 renderSentences 的 w.start/w.end 对齐。
@@ -156,10 +224,19 @@ function buildTextIndex(text) {
   }
   for (let i = 1; i < utf8ToCp.length; i++) if (utf8ToCp[i] == null) utf8ToCp[i] = utf8ToCp[i - 1];
 
+  const markerCp = new Set();
+  const markerRe = /<#[\d.]+#>/g;
+  let marker;
+  while ((marker = markerRe.exec(text || '')) !== null) {
+    const start = utf16ToCp[marker.index] ?? 0;
+    const end = utf16ToCp[marker.index + marker[0].length] ?? start;
+    for (let i = start; i < end; i++) markerCp.add(i);
+  }
+
   const searchChars = [];
   const searchMap = [];
   for (let i = 0; i < chars.length; i++) {
-    if (/\s/u.test(chars[i])) continue;
+    if (markerCp.has(i) || /\s/u.test(chars[i])) continue;
     searchChars.push(chars[i].toLowerCase());
     searchMap.push(i);
   }
@@ -167,7 +244,7 @@ function buildTextIndex(text) {
 }
 
 function compactText(s) {
-  return Array.from(String(s || '')).filter(ch => !/\s/u.test(ch)).join('').toLowerCase();
+  return Array.from(String(s || '').replace(/<#[\d.]+#>/g, '')).filter(ch => !/\s/u.test(ch)).join('').toLowerCase();
 }
 
 function scoreTextMatch(piece, expected) {
@@ -369,13 +446,13 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
   return charTime;
 }
 
-// ── 预处理：直接用原文调 MiniMax，字幕自然对齐 ──
+// ── 预处理：合成时加入教学停顿，字幕再映射回原文 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
+  const speech = buildSpeechText(text);
+  const speechText = speech.text || text;
 
-  // 不再插入停顿标记，直接用原文调 MiniMax
-  // 这样字幕时间戳与原文位置天然对齐，无需 buildTextMapping
-  const data = await minimaxTts(env, { text, voice: body.voice, speed: 0.85 }, {
+  const data = await minimaxTts(env, { text: speechText, voice: body.voice, speed: 0.85 }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
@@ -389,13 +466,15 @@ async function preprocessTts(env, body) {
   }
   const bytesPerMs = wav.wavSr * wav.wavCh * (wav.wavBits / 8) / 1000;
   const audioDurationMs = wav.pcmSize && bytesPerMs ? wav.pcmSize / bytesPerMs : 0;
-  const charTime = await buildCharTime(subtitle, text, audioDurationMs);
+  const speechCharTime = await buildCharTime(subtitle, speechText, audioDurationMs);
+  const charTime = projectCharTimeToOriginal(speechCharTime, speech.mapToOriginal, Array.from(text || '').length, audioDurationMs);
   const covered = charTime.filter(Boolean).length;
 
   return {
     char_time: charTime,
     char_count: Array.from(text || '').length,
     coverage: { covered, total: charTime.length },
+    speech_char_count: Array.from(speechText || '').length,
     sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
     data_off: wav.pcmOff, data_size: wav.pcmSize,
     text, audio_hex: hex

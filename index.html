@@ -40,7 +40,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .range-wrap input[type=range]{width:64px;height:4px;accent-color:var(--primary)}
 .range-wrap .rv{min-width:28px;text-align:center;font-weight:600;color:var(--primary);font-size:.78rem}
 .segments-wrapper{min-height:60px}
-.sgroup{margin-bottom:10px;border-left:3px solid var(--primary);padding-left:10px;border-radius:0 8px 8px 0;transition:background .15s,border-color .15s}
+.sgroup{margin-bottom:16px;border-left:3px solid var(--primary);padding-left:10px;border-radius:0 8px 8px 0;transition:background .15s,border-color .15s}
 .sgroup.active{border-left-color:var(--tile-active);background:#f0f4fc}
 .shdr{padding:6px 8px;cursor:pointer;font-size:var(--seg-size,1.15rem);font-weight:600;color:var(--primary);border-radius:6px;transition:background .12s;-webkit-user-select:none;user-select:none;touch-action:manipulation}
 .shdr:hover{background:var(--tile-bg)}
@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v2';
+const ALIGN_SCHEMA_VERSION = 'ct_v3';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -331,9 +331,10 @@ function hashText(text) {
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
   const bytesPerMs = sr * ch * (bits / 8) / 1000;
   const blockAlign = Math.max(1, ch * Math.ceil(bits / 8));
-  const pad = opts.padMs ?? 30;
-  let sb = Math.floor(Math.max(0, startMs - pad) * bytesPerMs);
-  let eb = Math.ceil((endMs + pad) * bytesPerMs);
+  const prePad = opts.prePadMs ?? opts.padMs ?? 30;
+  const postPad = opts.postPadMs ?? opts.padMs ?? 30;
+  let sb = Math.floor(Math.max(0, startMs - prePad) * bytesPerMs);
+  let eb = Math.ceil((endMs + postPad) * bytesPerMs);
   sb -= sb % blockAlign; eb -= eb % blockAlign;
   if (eb <= sb || sb >= pcm.length) return false;
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
@@ -1195,7 +1196,7 @@ async function playSentence(si) {
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), { padMs: 50, minMs: 320 });
+    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), { prePadMs: 90, postPadMs: 180, minMs: 420 });
     if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
@@ -1215,7 +1216,11 @@ async function playWord(si, wi) {
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), { padMs: 45, minMs: charLen(w.text) <= 1 ? 220 : 180 });
+    const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), {
+      prePadMs: charLen(w.text) <= 1 ? 95 : 80,
+      postPadMs: charLen(w.text) <= 1 ? 140 : 130,
+      minMs: charLen(w.text) <= 1 ? 260 : 220
+    });
     if (ok) return;
   }
   await speakOneCached(w.text, parseFloat(speedRange.value));
@@ -1260,7 +1265,7 @@ speakAllBtn.addEventListener('click', async () => {
       if (groups[si]) groups[si].classList.add('active');
       const hdrs = segContainer.querySelectorAll('.shdr');
       if (hdrs[si]) hdrs[si].classList.add('playing');
-      const ok = await playCharRange(s.start, s.end, rate, { padMs: 50, minMs: 320 });
+      const ok = await playCharRange(s.start, s.end, rate, { prePadMs: 90, postPadMs: 180, minMs: 420 });
       if (!ok) await speak(s.text, rate);
       await new Promise(r => setTimeout(r, 100));
       clearHighlight();
