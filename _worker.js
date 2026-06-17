@@ -180,14 +180,13 @@ async function buildCharTime(subtitle, textMapping) {
   return charTime;
 }
 
-// ── 预处理：一份慢速音频，字幕映射回原文位置 ──
+// ── 预处理：直接用原文调 MiniMax，字幕自然对齐 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
 
-  const sentenceText = addSentencePauses(text);
-  const textMapping = buildTextMapping(text, sentenceText);
-
-  const data = await minimaxTts(env, { text: sentenceText, voice: body.voice, speed: 0.85 }, {
+  // 不再插入停顿标记，直接用原文调 MiniMax
+  // 这样字幕时间戳与原文位置天然对齐，无需 buildTextMapping
+  const data = await minimaxTts(env, { text, voice: body.voice, speed: 0.85 }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
@@ -199,7 +198,7 @@ async function preprocessTts(env, body) {
     const r = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
     subtitle = await r.json();
   }
-  const charTime = await buildCharTime(subtitle, textMapping);
+  const charTime = await buildCharTime(subtitle, null);
 
   return { char_time: charTime, sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits, data_off: wav.pcmOff, data_size: wav.pcmSize, text, audio_hex: hex };
 }
