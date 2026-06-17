@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v5';
+const ALIGN_SCHEMA_VERSION = 'ct_v6';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -346,6 +346,10 @@ function clipCacheKey(text) {
   return 'clip_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + text);
 }
 
+function contextClipCacheKey(unit) {
+  return 'ctx_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.contextText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
+}
+
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
   const bytesPerMs = bytesPerMsFor(sr, ch, bits);
   const blockAlign = blockAlignFor(ch, bits);
@@ -360,9 +364,11 @@ async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {})
   return playAudioBlob({ p: slice, sr, ch, bits }, rate);
 }
 
-async function playCharRange(startChar, endChar, rate, opts = {}) {
-  if (!songData || !songData.charTime) return false;
-  const { pcm, charTime, sr, ch, bits } = songData;
+async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
+  if (!source || !source.charTime) return false;
+  const pcm = source.pcm || source.p;
+  const { charTime, sr, ch, bits } = source;
+  if (!pcm) return false;
   let startMs = null, endMs = null;
   for (let i = startChar; i < endChar; i++) {
     if (charTime[i]) {
@@ -409,6 +415,11 @@ async function playCharRange(startChar, endChar, rate, opts = {}) {
     };
   }
   return playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts);
+}
+
+async function playCharRange(startChar, endChar, rate, opts = {}) {
+  if (!songData || !songData.charTime) return false;
+  return playPcmCharRange(songData, startChar, endChar, rate, opts);
 }
 
 async function playSentenceRange(si, rate) {
@@ -768,6 +779,38 @@ async function fetchTtsFromMiniMax(text) {
   return await resp.blob();
 }
 
+function parsePreprocessAudio(pd) {
+  const hex = pd.audio_hex;
+  const len = hex.length >> 1;
+  const wav = new Uint8Array(len);
+  for (let i = 0; i < len; i++) wav[i] = parseInt(hex.substring(i << 1, (i << 1) + 2), 16);
+  const dataOff = pd.data_off || 44;
+  const dataSize = pd.data_size || (wav.length - dataOff);
+  return {
+    p: wav.slice(dataOff, dataOff + dataSize),
+    sr: pd.sr || 32000,
+    ch: pd.ch || 1,
+    bits: pd.bits || 16,
+    charTime: pd.char_time || []
+  };
+}
+
+async function fetchPreprocessClip(text) {
+  const resp = await fetch('/preprocess', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice: minimaxVoice }),
+  });
+  if (!resp.ok) {
+    let msg = '预处理clip失败: ' + resp.status;
+    try { const j = await resp.json(); msg = j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  const pd = await resp.json();
+  if (!pd.char_time || !pd.audio_hex) throw new Error('clip数据无效');
+  return parsePreprocessAudio(pd);
+}
+
 async function playAudioBlob(data, rate) {
   if (!data) return false;
   try {
@@ -857,6 +900,96 @@ async function playSegmentClip(text, rate) {
   }
 }
 
+function contextUnitForWord(si, wi) {
+  const s = currentSentences[si];
+  const w = s?.words?.[wi];
+  if (!s || !w || w.type === 'punct' || w.type === 'space' || charLen(w.text) !== 1) return null;
+  const sentChars = textChars(s.text);
+  const targetStart = w.start - s.start;
+  const targetEnd = w.end - s.start;
+  if (targetStart < 0 || targetEnd > sentChars.length || targetEnd <= targetStart) return null;
+  const radius = 4;
+  const contextStart = Math.max(0, targetStart - radius);
+  const contextEnd = Math.min(sentChars.length, targetEnd + radius);
+  if (contextEnd - contextStart <= 1) return null;
+  return {
+    si, wi,
+    text: w.text,
+    contextText: sentChars.slice(contextStart, contextEnd).join(''),
+    targetStart: targetStart - contextStart,
+    targetEnd: targetEnd - contextStart
+  };
+}
+
+function buildContextClipUnits() {
+  const units = [];
+  const seen = new Set();
+  for (let si = 0; si < currentSentences.length; si++) {
+    const s = currentSentences[si];
+    for (let wi = 0; wi < s.words.length; wi++) {
+      const unit = contextUnitForWord(si, wi);
+      if (!unit) continue;
+      const key = contextClipCacheKey(unit);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      units.push(unit);
+    }
+  }
+  return units;
+}
+
+async function ensureContextClipCached(unit) {
+  if (!unit || !cacheAvailable) return false;
+  const key = contextClipCacheKey(unit);
+  const cached = await ttsCache.get(key);
+  if (cached) return true;
+  const clip = await fetchPreprocessClip(unit.contextText);
+  await ttsCache.set(key, { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText });
+  return true;
+}
+
+async function preloadContextClips(units, onProgress) {
+  if (!cacheAvailable || !onlineTtsEnabled) return { ok: 0, fail: 0, total: 0 };
+  let ok = 0, fail = 0;
+  for (let i = 0; i < units.length; i++) {
+    const unit = units[i];
+    try {
+      await ensureContextClipCached(unit);
+      ok++;
+    } catch (e) {
+      fail++;
+      console.warn('[context clip] failed', unit.text, unit.contextText, e.message);
+    }
+    if (onProgress) onProgress(i + 1, units.length, ok, fail);
+  }
+  return { ok, fail, total: units.length };
+}
+
+async function playContextSegmentClip(unit, rate) {
+  if (!unit || !onlineTtsEnabled) return false;
+  const key = contextClipCacheKey(unit);
+  try {
+    let clip = cacheAvailable ? await ttsCache.get(key) : null;
+    if (!clip) {
+      clip = await fetchPreprocessClip(unit.contextText);
+      clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
+      if (cacheAvailable) await ttsCache.set(key, clip);
+    }
+    const ok = await playPcmCharRange(clip, clip.targetStart, clip.targetEnd, rate, {
+      guardNeighbors: true,
+      neighborBorrowMs: 36,
+      prePadMs: 36,
+      postPadMs: 48,
+      minMs: 230
+    });
+    if (ok) statusBar.textContent = `🔊: "${unit.text}" (上下文clip)`;
+    return ok;
+  } catch (e) {
+    console.warn('[context segment clip] failed', unit.text, e.message);
+    return false;
+  }
+}
+
 // ── 预处理 ──
 function extractUnique(text) {
   const sents = splitSentences(text);
@@ -915,6 +1048,7 @@ preprocessBtn.addEventListener('click', async () => {
   const text = inputEl.value.trim();
   const totalChars = charLen(text);
   if (!text) { showToast('请先输入文本'); return; }
+  renderSentences(text);
 
   preprocessing = true;
   preprocessBar.style.display = '';
@@ -1039,11 +1173,17 @@ preprocessBtn.addEventListener('click', async () => {
       preprocessFill.style.width = pct + '%';
       statusBar.textContent = `⚡ 准备字词发音 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
     });
+    preprocessFill.style.width = '99%';
+    const contextUnits = buildContextClipUnits();
+    const contextResult = await preloadContextClips(contextUnits, (done, total, ok, fail) => {
+      statusBar.textContent = `⚡ 准备单字上下文 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
+    });
 
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
     const clipMsg = clipResult.total ? `, 字词clip ${clipResult.ok}/${clipResult.total}` : '';
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳${clipMsg})`;
+    const contextMsg = contextResult.total ? `, 上下文clip ${contextResult.ok}/${contextResult.total}` : '';
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳${clipMsg}${contextMsg})`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
@@ -1343,6 +1483,10 @@ async function playWord(si, wi) {
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
     const rate = parseFloat(speedRange.value);
+    if (charLen(w.text) === 1) {
+      const ctxOk = await playContextSegmentClip(contextUnitForWord(si, wi), rate);
+      if (ctxOk) return;
+    }
     const clipOk = await playSegmentClip(w.text, rate);
     if (clipOk) return;
     const ok = await playCharRange(w.start, w.end, rate, {
