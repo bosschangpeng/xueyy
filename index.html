@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v3';
+const ALIGN_SCHEMA_VERSION = 'ct_v4';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -322,6 +322,20 @@ function charLen(text) {
   return textChars(text).length;
 }
 
+function bytesPerMsFor(sr, ch, bits) {
+  return sr * ch * (bits / 8) / 1000;
+}
+
+function blockAlignFor(ch, bits) {
+  return Math.max(1, ch * Math.ceil(bits / 8));
+}
+
+function makeSilencePcm(durationMs, sr, ch, bits) {
+  const blockAlign = blockAlignFor(ch, bits);
+  const len = Math.max(0, Math.round(durationMs * bytesPerMsFor(sr, ch, bits)));
+  return new Uint8Array(len - (len % blockAlign));
+}
+
 function hashText(text) {
   let h = 0;
   for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0;
@@ -329,8 +343,8 @@ function hashText(text) {
 }
 
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
-  const bytesPerMs = sr * ch * (bits / 8) / 1000;
-  const blockAlign = Math.max(1, ch * Math.ceil(bits / 8));
+  const bytesPerMs = bytesPerMsFor(sr, ch, bits);
+  const blockAlign = blockAlignFor(ch, bits);
   const prePad = opts.prePadMs ?? opts.padMs ?? 30;
   const postPad = opts.postPadMs ?? opts.padMs ?? 30;
   let sb = Math.floor(Math.max(0, startMs - prePad) * bytesPerMs);
@@ -356,13 +370,49 @@ async function playCharRange(startChar, endChar, rate, opts = {}) {
     console.warn('[charTime] missing range', { startChar, endChar });
     return false;
   }
+  let guardStartMs = 0;
+  let guardEndMs = pcm.length / bytesPerMsFor(sr, ch, bits);
+  if (opts.guardNeighbors) {
+    for (let i = startChar - 1; i >= 0; i--) {
+      if (charTime[i]) {
+        guardStartMs = Math.max(0, charTime[i][1] - (opts.neighborBorrowMs ?? 35));
+        break;
+      }
+    }
+    for (let i = endChar; i < charTime.length; i++) {
+      if (charTime[i]) {
+        guardEndMs = charTime[i][0] + (opts.neighborBorrowMs ?? 35);
+        break;
+      }
+    }
+  }
   const minMs = opts.minMs ?? ((endChar - startChar) <= 1 ? 220 : 160);
   if (endMs - startMs < minMs) {
     const mid = (startMs + endMs) / 2;
     startMs = Math.max(0, mid - minMs / 2);
     endMs = mid + minMs / 2;
   }
+  if (opts.guardNeighbors) {
+    startMs = Math.max(guardStartMs, startMs);
+    endMs = Math.min(guardEndMs, endMs);
+    if (endMs <= startMs) return false;
+    const prePad = opts.prePadMs ?? opts.padMs ?? 30;
+    const postPad = opts.postPadMs ?? opts.padMs ?? 30;
+    opts = {
+      ...opts,
+      prePadMs: Math.max(0, Math.min(prePad, startMs - guardStartMs)),
+      postPadMs: Math.max(0, Math.min(postPad, guardEndMs - endMs))
+    };
+  }
   return playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts);
+}
+
+async function playSentenceRange(si, rate) {
+  if (!songData?.sentenceRanges?.[si]) return false;
+  const { pcm, sr, ch, bits, sentenceRanges } = songData;
+  const r = sentenceRanges[si];
+  if (!r || r.endMs <= r.startMs) return false;
+  return playSongSlice(pcm, sr, ch, bits, r.startMs, r.endMs, rate, { prePadMs: 0, postPadMs: 0 });
 }
 
 const SPEECH_PROXY = '/tts';
@@ -827,7 +877,7 @@ preprocessBtn.addEventListener('click', async () => {
   if (cacheAvailable) {
     const cached = await ttsCache.get(hkey);
     if (cached && cached.pcm && cached.charTime && cached.alignVersion === ALIGN_SCHEMA_VERSION) {
-      songData = { pcm: cached.pcm, charTime: cached.charTime, sr: cached.sr, ch: cached.ch, bits: cached.bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
+      songData = { pcm: cached.pcm, charTime: cached.charTime, sentenceRanges: cached.sentenceRanges || [], sr: cached.sr, ch: cached.ch, bits: cached.bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
       statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
@@ -838,8 +888,10 @@ preprocessBtn.addEventListener('click', async () => {
   statusBar.textContent = '⚡ 预处理中...';
   preprocessFill.style.width = '5%';
 
-  // 分批：4 句一组
-  const SENT_PER_CHUNK = 4;
+  // 逐句预处理：句间停顿用真实静音拼接，避免停顿标记污染字幕坐标
+  const SENT_PER_CHUNK = 1;
+  const SENTENCE_GAP_MS = 430;
+  const FINAL_TAIL_MS = 220;
   const sents = splitSentences(text);
   const chunks = [];
   for (let i = 0; i < sents.length; i += SENT_PER_CHUNK) {
@@ -849,6 +901,7 @@ preprocessBtn.addEventListener('click', async () => {
   try {
     const allPcmChunks = [];
     const allCharTime = [];
+    const sentenceRanges = [];
     let charOffset = 0;
     let timeOffsetMs = 0;
     let sr = 32000, ch = 1, bits = 16;
@@ -880,11 +933,24 @@ preprocessBtn.addEventListener('click', async () => {
       const dataOff = pd.data_off || 44;
       const dataSize = pd.data_size || (wav.length - dataOff);
       const pcm = wav.slice(dataOff, dataOff + dataSize);
+      const bytesPerMs = bytesPerMsFor(sr, ch, bits);
+      const chunkDurationMs = pcm.length / bytesPerMs;
+      const gapMs = ci < chunks.length - 1 ? SENTENCE_GAP_MS : FINAL_TAIL_MS;
+      const silence = makeSilencePcm(gapMs, sr, ch, bits);
+      const silenceMs = silence.length / bytesPerMs;
+      const sentenceStartMs = timeOffsetMs;
+      const sentenceEndMs = timeOffsetMs + chunkDurationMs + silenceMs;
       allPcmChunks.push(pcm);
+      if (silence.length) allPcmChunks.push(silence);
+      sentenceRanges.push({
+        startMs: sentenceStartMs,
+        endMs: sentenceEndMs,
+        audioEndMs: timeOffsetMs + chunkDurationMs,
+        charStart: charOffset,
+        charEnd: charOffset + charLen(chunk)
+      });
 
       // 合并 charTime：偏移时间 + 偏移字符位置
-      const bytesPerMs = sr * ch * (bits / 8) / 1000;
-      const chunkDurationMs = pcm.length / bytesPerMs;
       const ct = pd.char_time;
       let batchCovered = 0;
       for (let i = 0; i < ct.length; i++) {
@@ -898,7 +964,7 @@ preprocessBtn.addEventListener('click', async () => {
       }
       console.log(`批次${ci+1}: ${chunk.length}字, charTime覆盖${batchCovered}/${ct.length}, 音频${chunkDurationMs.toFixed(0)}ms`);
       charOffset += charLen(chunk);
-      timeOffsetMs += chunkDurationMs;
+      timeOffsetMs += chunkDurationMs + silenceMs;
     }
 
     // 拼接所有 PCM
@@ -910,10 +976,10 @@ preprocessBtn.addEventListener('click', async () => {
 
     preprocessFill.style.width = '90%';
     statusBar.textContent = '⚡ 缓存中...';
-    songData = { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
+    songData = { pcm: combinedPcm, charTime: allCharTime, sentenceRanges, sr, ch, bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION });
+      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sentenceRanges, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION });
     }
 
     preprocessFill.style.width = '100%';
@@ -1196,7 +1262,8 @@ async function playSentence(si) {
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
-    const ok = await playCharRange(s.start, s.end, parseFloat(speedRange.value), { prePadMs: 90, postPadMs: 180, minMs: 420 });
+    const rate = parseFloat(speedRange.value);
+    const ok = await playSentenceRange(si, rate) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520 });
     if (ok) return;
   }
   await speak(s.text, parseFloat(speedRange.value));
@@ -1217,9 +1284,11 @@ async function playWord(si, wi) {
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
     const ok = await playCharRange(w.start, w.end, parseFloat(speedRange.value), {
-      prePadMs: charLen(w.text) <= 1 ? 95 : 80,
-      postPadMs: charLen(w.text) <= 1 ? 140 : 130,
-      minMs: charLen(w.text) <= 1 ? 260 : 220
+      guardNeighbors: true,
+      neighborBorrowMs: charLen(w.text) <= 1 ? 42 : 34,
+      prePadMs: charLen(w.text) <= 1 ? 42 : 34,
+      postPadMs: charLen(w.text) <= 1 ? 58 : 48,
+      minMs: charLen(w.text) <= 1 ? 240 : 210
     });
     if (ok) return;
   }
@@ -1265,9 +1334,9 @@ speakAllBtn.addEventListener('click', async () => {
       if (groups[si]) groups[si].classList.add('active');
       const hdrs = segContainer.querySelectorAll('.shdr');
       if (hdrs[si]) hdrs[si].classList.add('playing');
-      const ok = await playCharRange(s.start, s.end, rate, { prePadMs: 90, postPadMs: 180, minMs: 420 });
+      const ok = await playSentenceRange(si, rate) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520 });
       if (!ok) await speak(s.text, rate);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 40));
       clearHighlight();
     }
     statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;

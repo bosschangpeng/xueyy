@@ -446,13 +446,11 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
   return charTime;
 }
 
-// ── 预处理：合成时加入教学停顿，字幕再映射回原文 ──
+// ── 预处理：直接合成当前句/片段，停顿由前端拼接真实静音 ──
 async function preprocessTts(env, body) {
   const text = body.text || '';
-  const speech = buildSpeechText(text);
-  const speechText = speech.text || text;
 
-  const data = await minimaxTts(env, { text: speechText, voice: body.voice, speed: 0.85 }, {
+  const data = await minimaxTts(env, { text, voice: body.voice, speed: 0.85 }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 
@@ -466,15 +464,13 @@ async function preprocessTts(env, body) {
   }
   const bytesPerMs = wav.wavSr * wav.wavCh * (wav.wavBits / 8) / 1000;
   const audioDurationMs = wav.pcmSize && bytesPerMs ? wav.pcmSize / bytesPerMs : 0;
-  const speechCharTime = await buildCharTime(subtitle, speechText, audioDurationMs);
-  const charTime = projectCharTimeToOriginal(speechCharTime, speech.mapToOriginal, Array.from(text || '').length, audioDurationMs);
+  const charTime = await buildCharTime(subtitle, text, audioDurationMs);
   const covered = charTime.filter(Boolean).length;
 
   return {
     char_time: charTime,
     char_count: Array.from(text || '').length,
     coverage: { covered, total: charTime.length },
-    speech_char_count: Array.from(speechText || '').length,
     sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
     data_off: wav.pcmOff, data_size: wav.pcmSize,
     text, audio_hex: hex
