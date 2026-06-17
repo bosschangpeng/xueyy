@@ -1124,22 +1124,26 @@ function renderSentences(text) {
   currentSentences = [];
   let globalPos = 0;
   for (let si = 0; si < sents.length; si++) {
-    const words = segmentText(sents[si]);
+    const rawSent = sents[si];
+    const leadingText = (rawSent.match(/^\s*/u) || [''])[0];
+    const leadingLen = charLen(leadingText);
+    const displaySent = rawSent.trim();
+    const words = segmentText(displaySent);
     let localPos = 0;
     for (const w of words) {
       const wLen = charLen(w.text);
-      w.start = globalPos + localPos;
-      w.end = globalPos + localPos + wLen;
+      w.start = globalPos + leadingLen + localPos;
+      w.end = globalPos + leadingLen + localPos + wLen;
       localPos += wLen;
     }
-    const sentLen = charLen(sents[si]);
-    currentSentences.push({ text: sents[si], words, start: globalPos, end: globalPos + sentLen });
-    globalPos += sentLen;
+    const sentLen = charLen(displaySent);
+    currentSentences.push({ text: displaySent, words, start: globalPos + leadingLen, end: globalPos + leadingLen + sentLen });
+    globalPos += charLen(rawSent);
     const group = document.createElement('div');
     group.className = 'sgroup';
     const hdr = document.createElement('div');
     hdr.className = 'shdr';
-    hdr.textContent = '🔊 ' + sents[si];
+    hdr.textContent = '🔊 ' + displaySent;
     hdr.dataset.si = si;
     hdr.addEventListener('click', () => playSentence(si));
     hdr.addEventListener('touchend', (e) => { e.preventDefault(); playSentence(si); });
