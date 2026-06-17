@@ -351,7 +351,7 @@ function bestWordRange(idx, itemIdx, itemRange, word, cursor) {
   return findTextRange(idx, expected, Math.max(cursor || 0, itemRange?.start || 0));
 }
 
-function applyTimedRange(charTime, sources, range, timeBegin, timeEnd, sourceLabel) {
+function applyTimedRange(charTime, sources, groups, range, timeBegin, timeEnd, sourceLabel, groupId) {
   if (!range || !Number.isFinite(timeBegin) || !Number.isFinite(timeEnd) || timeEnd <= timeBegin) return 0;
   const start = Math.max(0, range.start);
   const end = Math.min(charTime.length, range.end);
@@ -365,6 +365,7 @@ function applyTimedRange(charTime, sources, range, timeBegin, timeEnd, sourceLab
       timeBegin + ((i - start + 1) / span) * dur
     ];
     if (sources) sources[i] = sourceLabel || 'word';
+    if (groups) groups[i] = groupId || sourceLabel || 'word';
     n++;
   }
   return n;
@@ -418,16 +419,19 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
   const idx = buildTextIndex(text);
   const charTime = new Array(idx.chars.length);
   const sources = new Array(idx.chars.length);
+  const groups = new Array(idx.chars.length);
   const items = Array.isArray(subtitle) ? subtitle : [];
   let cursor = 0;
 
-  for (const item of items) {
+  for (let itemNo = 0; itemNo < items.length; itemNo++) {
+    const item = items[itemNo];
     const itemRange = bestItemRange(idx, item, cursor);
     const itemIdx = item.text ? buildTextIndex(item.text) : null;
     const twords = Array.isArray(item.timestamped_words) ? item.timestamped_words : [];
     let addedWords = 0;
 
-    for (const w of twords) {
+    for (let wordNo = 0; wordNo < twords.length; wordNo++) {
+      const w = twords[wordNo];
       const range = bestWordRange(idx, itemIdx, itemRange, w, cursor);
       if (!range) continue;
       let tb = w.time_begin;
@@ -441,20 +445,41 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
       const sourceLabel = hasDirectWordTime
         ? (range.end - range.start === 1 ? 'char' : 'word')
         : 'word_est';
-      if (applyTimedRange(charTime, sources, range, tb, te, sourceLabel)) {
+      const groupId = `${sourceLabel}:${itemNo}:${wordNo}:${range.start}-${range.end}`;
+      if (applyTimedRange(charTime, sources, groups, range, tb, te, sourceLabel, groupId)) {
         addedWords++;
         cursor = Math.max(cursor, range.end);
       }
     }
 
     if (!addedWords && itemRange && item.time_begin != null && item.time_end != null) {
-      applyTimedRange(charTime, sources, itemRange, item.time_begin, item.time_end, 'item');
+      applyTimedRange(charTime, sources, groups, itemRange, item.time_begin, item.time_end, 'item', `item:${itemNo}:${itemRange.start}-${itemRange.end}`);
       cursor = Math.max(cursor, itemRange.end);
     }
   }
 
   fillCharTimeGaps(charTime, audioDurationMs, sources);
-  return { charTime, sources };
+  return { charTime, sources, groups };
+}
+
+function summarizeSubtitle(subtitle) {
+  const items = Array.isArray(subtitle) ? subtitle : [];
+  return items.slice(0, 20).map((item, idx) => ({
+    idx,
+    text: String(item.text || '').slice(0, 120),
+    text_begin: item.text_begin,
+    text_end: item.text_end,
+    time_begin: item.time_begin,
+    time_end: item.time_end,
+    words: (Array.isArray(item.timestamped_words) ? item.timestamped_words : []).slice(0, 80).map((w, wi) => ({
+      wi,
+      word: String(w.word || '').slice(0, 40),
+      word_begin: w.word_begin,
+      word_end: w.word_end,
+      time_begin: w.time_begin,
+      time_end: w.time_end,
+    }))
+  }));
 }
 
 // ── 预处理：直接合成当前句/片段，停顿由前端拼接真实静音 ──
@@ -478,6 +503,7 @@ async function preprocessTts(env, body) {
   const built = await buildCharTime(subtitle, text, audioDurationMs);
   const charTime = built.charTime;
   const charSource = built.sources;
+  const charGroup = built.groups;
   const covered = charTime.filter(Boolean).length;
   const sourceCounts = {};
   for (const s of charSource) if (s) sourceCounts[s] = (sourceCounts[s] || 0) + 1;
@@ -485,8 +511,10 @@ async function preprocessTts(env, body) {
   return {
     char_time: charTime,
     char_source: charSource,
+    char_group: charGroup,
     char_count: Array.from(text || '').length,
     coverage: { covered, total: charTime.length, sources: sourceCounts },
+    subtitle_debug: summarizeSubtitle(subtitle),
     sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
     data_off: wav.pcmOff, data_size: wav.pcmSize,
     text, audio_hex: hex

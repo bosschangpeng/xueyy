@@ -63,6 +63,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .segment.word .jp,.segment.char .jp{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .placeholder-text{color:var(--text-light);font-size:.9rem;text-align:center;padding:24px 0}
 .status-bar{font-size:.8rem;color:var(--text-light);margin-top:8px;min-height:1.2em;transition:opacity .3s}
+.debug-panel{font-size:.78rem;display:none}
+.debug-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.debug-title{font-weight:700;color:var(--primary)}
+.debug-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.debug-badge{display:inline-flex;align-items:center;border:1px solid #d8e2ee;background:#f3f7fb;border-radius:999px;padding:2px 8px;color:#607083;font-size:.72rem;margin-left:6px}
+.debug-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px}
+.debug-box{border:1px solid var(--border);border-radius:8px;padding:8px;background:#fbfcfe;min-width:0}
+.debug-box b{display:block;color:#5b6b7e;margin-bottom:2px}
+.debug-pre{white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#0f1720;color:#d8e6f3;padding:8px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.72rem;line-height:1.45}
+body.debug-mode .segment.dbg-direct{outline:2px solid rgba(39,174,96,.7);outline-offset:1px}
+body.debug-mode .segment.dbg-est{outline:2px dashed rgba(230,126,34,.85);outline-offset:1px}
+body.debug-mode .segment.dbg-missing{outline:2px solid rgba(231,76,60,.8);outline-offset:1px}
+body.debug-mode .segment.dbg-unknown{outline:2px dotted rgba(127,140,141,.8);outline-offset:1px}
 .footer{display:flex;gap:8px;justify-content:center;padding:8px 0 20px}
 .history-list{max-height:300px;overflow-y:auto}
 .history-item{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);gap:8px}
@@ -80,7 +93,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .modal-header .btn-close{background:none;border:none;font-size:1.5rem;cursor:pointer;padding:0 4px;color:var(--text-light);line-height:1}
 .modal-body{padding:16px;overflow-y:auto;max-height:calc(80vh - 60px)}
 .modal-footer{padding:12px 16px;border-top:1px solid var(--border);text-align:right}
-@media(max-width:480px){.container{padding:8px}.card{padding:12px}.header h1{font-size:1.25rem}.segment{padding:5px 8px}.toolbar{gap:6px}.btn{padding:8px 10px;font-size:.82rem}.speed-control input[type=range]{width:68px}.controls-row{gap:4px 8px;font-size:.75rem}.controls-row select{max-width:130px;font-size:.75rem}.range-wrap input[type=range]{width:48px}}
+@media(max-width:480px){.container{padding:8px}.card{padding:12px}.header h1{font-size:1.25rem}.segment{padding:5px 8px}.toolbar{gap:6px}.btn{padding:8px 10px;font-size:.82rem}.speed-control input[type=range]{width:68px}.controls-row{gap:4px 8px;font-size:.75rem}.controls-row select{max-width:130px;font-size:.75rem}.range-wrap input[type=range]{width:48px}.debug-grid{grid-template-columns:1fr}.debug-actions{justify-content:flex-start}}
 </style>
 </head>
 <body>
@@ -117,6 +130,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
       <label style="cursor:pointer;user-select:none"><input type="checkbox" id="jpToggle"> 粤拼</label>
       <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
       <label id="onlineTtsWrap" style="cursor:pointer;user-select:none" title="开启后使用在线高精度粤语发音"><input type="checkbox" id="onlineTtsToggle"> 在线TTS</label>
+      <label id="isolatedCharFallbackWrap" style="cursor:pointer;user-select:none;display:none" title="预处理模式下允许单字脱离上下文在线兜底，可能影响多音字"><input type="checkbox" id="isolatedCharFallbackToggle"> 孤字兜底</label>
       <label id="mxVoiceWrap" style="display:none" title="MiniMax在线语音">☁️ <select id="mxVoiceSelect"></select></label>
     </div>
     <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
@@ -135,9 +149,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
     </div>
     <div class="status-bar" id="statusBar"></div>
   </div>
+  <div class="card debug-panel" id="debugPanel">
+    <div class="debug-head">
+      <div class="debug-title">语音调试 <span class="debug-badge" id="debugBadge">未开启</span></div>
+      <div class="debug-actions">
+        <button class="btn btn-outline btn-sm" id="copyDebugBtn">复制报告</button>
+        <button class="btn btn-outline btn-sm" id="downloadDebugBtn">下载</button>
+        <button class="btn btn-danger btn-sm" id="clearDebugBtn">清日志</button>
+      </div>
+    </div>
+    <div class="debug-grid">
+      <div class="debug-box"><b>当前选择</b><div id="debugSelection">暂无</div></div>
+      <div class="debug-box"><b>预处理摘要</b><div id="debugSummary">暂无预处理数据</div></div>
+    </div>
+    <div class="debug-pre" id="debugLogView">等待播放事件...</div>
+  </div>
   <div class="footer">
     <button class="btn btn-outline btn-sm" id="clearBtn">🗑 清空</button>
     <button class="btn btn-outline btn-sm" id="historyBtn">📜 历史</button>
+    <button class="btn btn-outline btn-sm" id="debugPanelBtn">🐞 调试</button>
   </div>
 </div>
 <div class="modal-overlay" id="historyModal">
@@ -322,7 +352,7 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v8';
+const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -346,10 +376,148 @@ function makeSilencePcm(durationMs, sr, ch, bits) {
   return new Uint8Array(len - (len % blockAlign));
 }
 
+function pcmMeanAbs16(pcm, sr, ch, bits, centerMs, windowMs = 18) {
+  if (!pcm || bits !== 16 || !Number.isFinite(centerMs)) return null;
+  const bytesPerFrame = Math.max(1, ch * 2);
+  const totalFrames = Math.floor(pcm.length / bytesPerFrame);
+  if (!totalFrames) return null;
+  const centerFrame = Math.round(centerMs * sr / 1000);
+  const halfFrames = Math.max(2, Math.round(windowMs * sr / 2000));
+  const from = Math.max(0, centerFrame - halfFrames);
+  const to = Math.min(totalFrames, centerFrame + halfFrames);
+  if (to <= from) return null;
+  let sum = 0, n = 0;
+  for (let f = from; f < to; f++) {
+    const frameOff = f * bytesPerFrame;
+    for (let c = 0; c < ch; c++) {
+      const byteOff = frameOff + c * 2;
+      if (byteOff + 1 >= pcm.length) continue;
+      const u16 = pcm[byteOff] | (pcm[byteOff + 1] << 8);
+      const s16 = u16 > 32767 ? u16 - 65536 : u16;
+      sum += Math.abs(s16);
+      n++;
+    }
+  }
+  return n ? sum / n : null;
+}
+
+function findEnergyValleyMs(pcm, sr, ch, bits, minMs, maxMs, preferMs, windowMs = 18) {
+  if (!Number.isFinite(minMs) || !Number.isFinite(maxMs) || maxMs <= minMs) return null;
+  const stepMs = 4;
+  const start = Math.ceil(minMs / stepMs) * stepMs;
+  let best = null;
+  for (let ms = start; ms <= maxMs; ms += stepMs) {
+    const energy = pcmMeanAbs16(pcm, sr, ch, bits, ms, windowMs);
+    if (energy == null) continue;
+    const distancePenalty = Math.abs(ms - preferMs) * 10;
+    const score = energy + distancePenalty;
+    if (!best || score < best.score) best = { ms, energy: Math.round(energy), score: Math.round(score) };
+  }
+  return best;
+}
+
+function refineSliceByEnergy(pcm, sr, ch, bits, startMs, endMs, opts = {}) {
+  const pcmDurationMs = pcm?.length ? pcm.length / bytesPerMsFor(sr, ch, bits) : 0;
+  let sliceStartMs = Math.max(0, opts.sliceStartMs ?? (startMs - (opts.prePadMs || 0)));
+  let sliceEndMs = Math.min(pcmDurationMs, opts.sliceEndMs ?? (endMs + (opts.postPadMs || 0)));
+  const guardStartMs = Math.max(0, opts.guardStartMs ?? 0);
+  const guardEndMs = Math.min(pcmDurationMs, opts.guardEndMs ?? pcmDurationMs);
+  if (!pcmDurationMs || bits !== 16 || guardEndMs <= guardStartMs) {
+    return { sliceStartMs, sliceEndMs, reason: 'unsupported-pcm' };
+  }
+  const minSliceMs = opts.minSliceMs ?? Math.max(100, (endMs - startMs) * 0.75);
+  const prePad = opts.prePadMs || 0;
+  const postPad = opts.postPadMs || 0;
+  const startSearchMin = Math.max(guardStartMs, startMs - Math.max(80, prePad + 36));
+  const startSearchMax = Math.min(guardEndMs, startMs + 6, endMs - 40);
+  const endSearchMin = Math.max(guardStartMs, startMs + 40, endMs + 4);
+  const endSearchMax = Math.min(guardEndMs, endMs + Math.max(90, postPad + 50));
+  const startPrefer = Math.max(startSearchMin, startMs - Math.min(52, Math.max(20, prePad)));
+  const endPrefer = Math.min(endSearchMax, endMs + Math.min(70, Math.max(24, postPad)));
+  const startSnap = findEnergyValleyMs(pcm, sr, ch, bits, startSearchMin, startSearchMax, startPrefer);
+  const endSnap = findEnergyValleyMs(pcm, sr, ch, bits, endSearchMin, endSearchMax, endPrefer);
+
+  if (startSnap && startSnap.ms <= startMs + 6) sliceStartMs = Math.max(guardStartMs, startSnap.ms);
+  if (endSnap && endSnap.ms >= endMs + 4) sliceEndMs = Math.min(guardEndMs, endSnap.ms);
+
+  if (sliceEndMs - sliceStartMs < minSliceMs) {
+    sliceStartMs = Math.max(guardStartMs, Math.min(sliceStartMs, startMs - prePad));
+    sliceEndMs = Math.min(guardEndMs, Math.max(sliceEndMs, endMs + postPad));
+  }
+  if (sliceEndMs <= sliceStartMs) {
+    sliceStartMs = Math.max(0, opts.sliceStartMs ?? (startMs - prePad));
+    sliceEndMs = Math.min(pcmDurationMs, opts.sliceEndMs ?? (endMs + postPad));
+  }
+  return {
+    sliceStartMs,
+    sliceEndMs,
+    guardStartMs,
+    guardEndMs,
+    startSnap,
+    endSnap,
+    minSliceMs: Math.round(minSliceMs)
+  };
+}
+
+function applyAudioBufferFades(audioBuf, fadeInMs = 3, fadeOutMs = 8) {
+  if (!audioBuf || audioBuf.length < 32) return { fadeInFrames: 0, fadeOutFrames: 0 };
+  const sr = audioBuf.sampleRate || 32000;
+  const maxFadeFrames = Math.floor(audioBuf.length / 5);
+  const fadeInFrames = Math.max(0, Math.min(maxFadeFrames, Math.round(sr * fadeInMs / 1000)));
+  const fadeOutFrames = Math.max(0, Math.min(maxFadeFrames, Math.round(sr * fadeOutMs / 1000)));
+  for (let c = 0; c < audioBuf.numberOfChannels; c++) {
+    const cd = audioBuf.getChannelData(c);
+    for (let i = 0; i < fadeInFrames; i++) cd[i] *= i / Math.max(1, fadeInFrames);
+    for (let i = 0; i < fadeOutFrames; i++) {
+      const idx = cd.length - 1 - i;
+      if (idx < 0) break;
+      cd[idx] *= i / Math.max(1, fadeOutFrames);
+    }
+  }
+  return { fadeInFrames, fadeOutFrames };
+}
+
 function hashText(text) {
   let h = 0;
   for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0;
   return 'song_' + (h >>> 0).toString(36);
+}
+
+function currentAlignmentSignature() {
+  const parts = [`len:${charLen(inputEl?.value?.trim?.() || '')}`];
+  for (const s of currentSentences || []) {
+    const wordSig = (s.words || []).map(w => `${w.start}-${w.end}:${w.type}:${w.text}`).join(',');
+    parts.push(`${s.start}-${s.end}:${s.text}|${wordSig}`);
+  }
+  return hashText(parts.join('\n'));
+}
+
+function cachedSongDataIssue(cached, signature, totalChars) {
+  if (!cached || !cached.pcm || !cached.charTime) return 'missing-core-data';
+  if (cached.alignVersion !== ALIGN_SCHEMA_VERSION) return 'schema-mismatch';
+  if (cached.alignmentSignature !== signature) return 'signature-mismatch';
+  if ((cached.charTime?.length || 0) !== totalChars) return 'timeline-length-mismatch';
+  const ranges = cached.sentenceRanges || [];
+  if (ranges.length !== currentSentences.length) return 'sentence-count-mismatch';
+  for (let i = 0; i < currentSentences.length; i++) {
+    const s = currentSentences[i];
+    const r = ranges[i];
+    if (!r || r.charStart !== s.start || r.charEnd !== s.end) return `sentence-range-mismatch:${i}`;
+  }
+  return '';
+}
+
+function ensureSongDataCurrent(reason) {
+  if (!songData) return false;
+  const signature = currentAlignmentSignature();
+  const issue = cachedSongDataIssue(songData, signature, charLen(inputEl.value.trim()));
+  if (!issue) return true;
+  debugLog('songData:stale-before-play', { reason, issue, expectedSignature: signature, actualSignature: songData.alignmentSignature || '', alignVersion: songData.alignVersion || '' });
+  songData = null;
+  renderDebugPanel();
+  statusBar.textContent = '⚠ 预处理数据已过期，请重新预处理';
+  openDebugPanelForIssue('stale-songData-before-play');
+  return false;
 }
 
 function clipCacheKey(text) {
@@ -360,26 +528,66 @@ function contextClipCacheKey(unit) {
   return 'ctx_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.contextText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
 }
 
+function teachingClipCacheKey(unit) {
+  return 'teach_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.teachingText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
+}
+
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
-  if (!isPlaybackCurrent(opts.token)) return false;
+  const debugMeta = opts.debug || {};
+  if (!isPlaybackCurrent(opts.token)) {
+    debugLog('audio:stale-before-slice', { route: debugMeta.route || 'song-slice', token: opts.token });
+    return false;
+  }
   const bytesPerMs = bytesPerMsFor(sr, ch, bits);
   const blockAlign = blockAlignFor(ch, bits);
   const prePad = opts.prePadMs ?? opts.padMs ?? 30;
   const postPad = opts.postPadMs ?? opts.padMs ?? 30;
-  let sb = Math.floor(Math.max(0, startMs - prePad) * bytesPerMs);
-  let eb = Math.ceil((endMs + postPad) * bytesPerMs);
+  const pcmDurationMs = pcm.length / bytesPerMs;
+  let sliceStartMs = Math.max(0, opts.sliceStartMs ?? (startMs - prePad));
+  let sliceEndMs = Math.min(pcmDurationMs, opts.sliceEndMs ?? (endMs + postPad));
+  let boundary = null;
+  if (opts.snapToLowEnergy) {
+    boundary = refineSliceByEnergy(pcm, sr, ch, bits, startMs, endMs, {
+      sliceStartMs,
+      sliceEndMs,
+      prePadMs: prePad,
+      postPadMs: postPad,
+      guardStartMs: opts.boundaryGuardStartMs,
+      guardEndMs: opts.boundaryGuardEndMs,
+      minSliceMs: opts.boundaryMinSliceMs
+    });
+    sliceStartMs = Math.max(0, boundary.sliceStartMs);
+    sliceEndMs = Math.min(pcmDurationMs, boundary.sliceEndMs);
+  }
+  let sb = Math.floor(sliceStartMs * bytesPerMs);
+  let eb = Math.ceil(sliceEndMs * bytesPerMs);
   sb -= sb % blockAlign; eb -= eb % blockAlign;
-  if (eb <= sb || sb >= pcm.length) return false;
+  if (eb <= sb || sb >= pcm.length) {
+    debugLog('audio:slice-reject', { ...debugMeta, reason: 'bad-byte-range', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sb, eb, pcmBytes: pcm.length, boundary });
+    return false;
+  }
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
-  if (slice.length < 100) return false;
-  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token);
+  if (slice.length < 100) {
+    debugLog('audio:slice-reject', { ...debugMeta, reason: 'slice-too-short', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sliceBytes: slice.length, boundary });
+    return false;
+  }
+  const holdMs = Math.max(0, opts.holdMs || 0);
+  debugLog('audio:slice', { ...debugMeta, startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), prePad, postPad, holdMs, sb, eb: Math.min(eb, pcm.length), sliceBytes: slice.length, boundary });
+  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token, { ...debugMeta, pcmMs: Math.round(slice.length / bytesPerMs), holdMs });
 }
 
 async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
-  if (!source || !source.charTime) return false;
+  const debugMeta = opts.debug || {};
+  if (!source || !source.charTime) {
+    debugLog('range:reject', { ...debugMeta, token: opts.token, reason: 'missing-source', startChar, endChar });
+    return false;
+  }
   const pcm = source.pcm || source.p;
   const { charTime, sr, ch, bits } = source;
-  if (!pcm) return false;
+  if (!pcm) {
+    debugLog('range:reject', { ...debugMeta, token: opts.token, reason: 'missing-pcm', startChar, endChar });
+    return false;
+  }
   let startMs = null, endMs = null;
   for (let i = startChar; i < endChar; i++) {
     if (charTime[i]) {
@@ -389,8 +597,10 @@ async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
   }
   if (startMs === null || endMs === null || endMs <= startMs) {
     console.warn('[charTime] missing range', { startChar, endChar });
+    debugLog('range:reject', { ...debugMeta, token: opts.token, reason: 'missing-char-time', startChar, endChar, info: timingInfoForRange(startChar, endChar, source) });
     return false;
   }
+  const rawInfo = timingInfoForRange(startChar, endChar, source);
   let guardStartMs = 0;
   let guardEndMs = pcm.length / bytesPerMsFor(sr, ch, bits);
   if (opts.guardNeighbors) {
@@ -416,15 +626,26 @@ async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
   if (opts.guardNeighbors) {
     startMs = Math.max(guardStartMs, startMs);
     endMs = Math.min(guardEndMs, endMs);
-    if (endMs <= startMs) return false;
+    if (endMs <= startMs) {
+      debugLog('range:reject', { ...debugMeta, token: opts.token, reason: 'neighbor-guard-empty', startChar, endChar, rawInfo, guardStartMs: Math.round(guardStartMs), guardEndMs: Math.round(guardEndMs) });
+      return false;
+    }
+    const rejectBelowMs = opts.rejectBelowMs ?? Math.max(90, minMs * 0.72);
+    if (endMs - startMs < rejectBelowMs) {
+      debugLog('range:reject', { ...debugMeta, token: opts.token, reason: 'guarded-range-too-short', startChar, endChar, rawInfo, durationMs: Math.round(endMs - startMs), minMs, rejectBelowMs: Math.round(rejectBelowMs), guardStartMs: Math.round(guardStartMs), guardEndMs: Math.round(guardEndMs) });
+      return false;
+    }
     const prePad = opts.prePadMs ?? opts.padMs ?? 30;
     const postPad = opts.postPadMs ?? opts.padMs ?? 30;
     opts = {
       ...opts,
       prePadMs: Math.max(0, Math.min(prePad, startMs - guardStartMs)),
-      postPadMs: Math.max(0, Math.min(postPad, guardEndMs - endMs))
+      postPadMs: Math.max(0, Math.min(postPad, guardEndMs - endMs)),
+      boundaryGuardStartMs: guardStartMs,
+      boundaryGuardEndMs: guardEndMs
     };
   }
+  debugLog('range:computed', { ...debugMeta, token: opts.token, startChar, endChar, startMs: Math.round(startMs), endMs: Math.round(endMs), rawInfo, prePadMs: opts.prePadMs ?? opts.padMs ?? 30, postPadMs: opts.postPadMs ?? opts.padMs ?? 30 });
   return playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts);
 }
 
@@ -439,7 +660,16 @@ async function playSentenceRange(si, rate, token) {
   const { pcm, sr, ch, bits, sentenceRanges } = songData;
   const r = sentenceRanges[si];
   if (!r || r.endMs <= r.startMs) return false;
-  return playSongSlice(pcm, sr, ch, bits, r.startMs, r.endMs, rate, { prePadMs: 0, postPadMs: 0, token });
+  const tailMs = Math.max(0, r.endMs - (r.audioEndMs ?? r.endMs));
+  const effectiveTailMs = tailMs / Math.max(0.1, rate || 1);
+  const holdMs = Math.max(0, Math.round(520 - effectiveTailMs));
+  return playSongSlice(pcm, sr, ch, bits, r.startMs, r.endMs, rate, {
+    prePadMs: 0,
+    postPadMs: 0,
+    holdMs,
+    token,
+    debug: { route: 'sentence-range', kind: 'sentence', si, startChar: r.charStart, endChar: r.charEnd, leadMs: Math.round(r.leadMs ?? ((r.speechStartMs ?? r.startMs) - r.startMs)), tailMs: Math.round(tailMs), effectiveTailMs: Math.round(effectiveTailMs), text: currentSentences[si]?.text || '' }
+  });
 }
 
 const SPEECH_PROXY = '/tts';
@@ -548,6 +778,7 @@ function chunkText(text) {
 
 async function speak(text, rate = 1) {
   if (!text) return;
+  debugLog('speak:fallback-begin', { text: compactPreview(text), rate, onlineTtsEnabled, hasSpeechSynthesis: 'speechSynthesis' in window });
   stopSpeak();
   const parts = chunkText(text);
   statusBar.textContent = `🔊 ${parts.length}段: ${parts.join(' | ')}`;
@@ -562,6 +793,7 @@ async function speak(text, rate = 1) {
   if (!voice) return speakOnline(text, rate);
 
   for (let i = 0; i < parts.length; i++) {
+    debugLog('speak:system-part', { text: parts[i], idx: i + 1, total: parts.length, voice: voice?.name || '' });
     const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length);
     if (!ok) break;
     if (i < parts.length - 1) await new Promise(r => setTimeout(r, 200));
@@ -580,17 +812,18 @@ function speakOne(text, rate, vol, voice, idx, total) {
       u.voice = voice;
       currentUtterance = u;
       statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
-      u.onend = () => { currentUtterance = null; resolve(true); };
-      u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); resolve(false); };
+      u.onend = () => { currentUtterance = null; debugLog('speak:system-end', { text, idx: idx + 1, total }); resolve(true); };
+      u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); debugLog('speak:system-error', { text, idx: idx + 1, total, error: e.error || e.message || String(e) }); resolve(false); };
       window.speechSynthesis.speak(u);
       setTimeout(() => {
-        if (currentUtterance === u) { currentUtterance = null; resolve(true); }
+        if (currentUtterance === u) { currentUtterance = null; debugLog('speak:system-timeout-resolve', { text, idx: idx + 1, total }); resolve(true); }
       }, Math.max(text.length * 150 / rate, 500));
     }, 50);
   });
 }
 
 async function speakOnline(text, rate = 1) {
+  debugLog('speak:online-fallback', { text: compactPreview(text), rate, proxyAvailable });
   if (proxyAvailable !== false && (proxyAvailable || Date.now() > proxyRetryAt)) {
     const r = await tryFetchAudio(`${SPEECH_PROXY}?text=${encodeURIComponent(text)}`, rate);
     if (r) { proxyAvailable = true; return; }
@@ -615,8 +848,9 @@ async function tryFetchAudio(url, rate) {
     const gain = ctx.createGain(); gain.gain.value = Math.max(0, vol);
     src.connect(gain); gain.connect(ctx.destination);
     src.start(0); currentAudioSrc = src;
-    return new Promise(r => { src.onended = () => { currentAudioSrc = null; r(true); }; });
-  } catch (e) { return null; }
+    debugLog('audio:start', { route: 'tts-get-fallback', rate, durationMs: Math.round(audio.duration * 1000), sampleRate: audio.sampleRate });
+    return new Promise(r => { src.onended = () => { currentAudioSrc = null; debugLog('audio:end', { route: 'tts-get-fallback' }); r(true); }; });
+  } catch (e) { debugLog('audio:error', { route: 'tts-get-fallback', error: e.message }); return null; }
 }
 
 function stopSpeak() {
@@ -636,6 +870,7 @@ function stopSpeak() {
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
 let minimaxVoice = localStorage.getItem('mxVoice') || 'Cantonese_GentleLady';
+let isolatedCharFallbackEnabled = localStorage.getItem('isolatedCharFallback') === '1';
 let currentAudio = null;
 
 const MX_VOICES = [
@@ -661,6 +896,8 @@ mxVoiceSelect.addEventListener('change', () => {
 });
 
 const onlineTtsToggle = document.getElementById('onlineTtsToggle');
+const isolatedCharFallbackToggle = document.getElementById('isolatedCharFallbackToggle');
+const isolatedCharFallbackWrap = document.getElementById('isolatedCharFallbackWrap');
 const preprocessBtn = document.getElementById('preprocessBtn');
 const preprocessRow = document.getElementById('preprocessRow');
 const preprocessBar = document.getElementById('preprocessBar');
@@ -670,13 +907,16 @@ const cacheCountEl = document.getElementById('cacheCount');
 
 onlineTtsToggle.checked = onlineTtsEnabled;
 onlineTtsToggle.checked = onlineTtsEnabled;
+isolatedCharFallbackToggle.checked = isolatedCharFallbackEnabled;
 if (onlineTtsEnabled) {
   mxVoiceWrap.style.display = '';
+  isolatedCharFallbackWrap.style.display = '';
   document.getElementById('preprocessRow').style.display = '';
   document.getElementById('preprocessBtn').style.display = '';
   updateCacheStat();
 } else {
   mxVoiceWrap.style.display = 'none';
+  isolatedCharFallbackWrap.style.display = 'none';
   document.getElementById('preprocessRow').style.display = 'none';
   document.getElementById('preprocessBtn').style.display = 'none';
 }
@@ -686,16 +926,24 @@ onlineTtsToggle.addEventListener('change', () => {
   localStorage.setItem('onlineTts', onlineTtsEnabled ? '1' : '0');
   if (onlineTtsEnabled) {
     mxVoiceWrap.style.display = '';
+    isolatedCharFallbackWrap.style.display = '';
     document.getElementById('preprocessRow').style.display = '';
     document.getElementById('preprocessBtn').style.display = '';
     initMxVoice(); updateCacheStat();
     statusBar.textContent = '☁️ 在线TTS模式';
   } else {
     mxVoiceWrap.style.display = 'none';
+    isolatedCharFallbackWrap.style.display = 'none';
     document.getElementById('preprocessRow').style.display = 'none';
     document.getElementById('preprocessBtn').style.display = 'none';
     statusBar.textContent = '🔊 系统TTS模式';
   }
+});
+
+isolatedCharFallbackToggle.addEventListener('change', () => {
+  isolatedCharFallbackEnabled = isolatedCharFallbackToggle.checked;
+  localStorage.setItem('isolatedCharFallback', isolatedCharFallbackEnabled ? '1' : '0');
+  debugLog('settings:isolated-char-fallback', { enabled: isolatedCharFallbackEnabled });
 });
 
 // IndexedDB TTS 缓存
@@ -774,6 +1022,14 @@ class TtsCache {
     if (!this.db) return;
     try { const store = await this._tx('readwrite'); store.clear(); this._count = 0; } catch {}
   }
+  async delete(key) {
+    if (!this.db) return false;
+    try {
+      const store = await this._tx('readwrite');
+      await new Promise(resolve => { const r = store.delete(key); r.onsuccess = () => resolve(); r.onerror = () => resolve(); });
+      return true;
+    } catch { return false; }
+  }
 }
 const ttsCache = new TtsCache();
 
@@ -781,7 +1037,7 @@ async function fetchTtsFromMiniMax(text) {
   const resp = await fetch('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: minimaxVoice }),
+    body: JSON.stringify({ text, voice: minimaxVoice, speed: 0.85 }),
   });
   if (!resp.ok) {
     let msg = 'MiniMax TTS failed: ' + resp.status;
@@ -804,7 +1060,12 @@ function parsePreprocessAudio(pd) {
     ch: pd.ch || 1,
     bits: pd.bits || 16,
     charTime: pd.char_time || [],
-    charSource: pd.char_source || []
+    charSource: pd.char_source || [],
+    charGroup: pd.char_group || [],
+    coverage: pd.coverage || null,
+    subtitleDebug: pd.subtitle_debug || [],
+    text: pd.text || '',
+    charCount: pd.char_count || 0
   };
 }
 
@@ -824,13 +1085,19 @@ async function fetchPreprocessClip(text) {
   return parsePreprocessAudio(pd);
 }
 
-async function playAudioBlob(data, rate, token) {
+async function playAudioBlob(data, rate, token, debugMeta = {}) {
   if (!data) return false;
-  if (!isPlaybackCurrent(token)) return false;
+  if (!isPlaybackCurrent(token)) {
+    debugLog('audio:stale-before-decode', { route: debugMeta.route || 'blob', token });
+    return false;
+  }
   try {
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') await ctx.resume();
-    if (!isPlaybackCurrent(token)) return false;
+    if (!isPlaybackCurrent(token)) {
+      debugLog('audio:stale-after-resume', { route: debugMeta.route || 'blob', token });
+      return false;
+    }
     let audioBuf;
     // 新 PCM 格式
     if (data.p) {
@@ -849,7 +1116,11 @@ async function playAudioBlob(data, rate, token) {
       // 旧 Blob 格式（WAV）
       audioBuf = await ctx.decodeAudioData(await data.arrayBuffer());
     } else return false;
-    if (!isPlaybackCurrent(token)) return false;
+    if (!isPlaybackCurrent(token)) {
+      debugLog('audio:stale-after-decode', { route: debugMeta.route || 'blob', token });
+      return false;
+    }
+    const fade = applyAudioBufferFades(audioBuf);
     const src = ctx.createBufferSource();
     src.buffer = audioBuf;
     src.playbackRate.value = rate;
@@ -859,12 +1130,23 @@ async function playAudioBlob(data, rate, token) {
     gain.connect(ctx.destination);
     if (currentAudioSrc) try { currentAudioSrc.stop(); } catch {}
     currentAudioSrc = src;
+    debugLog('audio:start', { ...debugMeta, token, rate, durationMs: Math.round(audioBuf.duration * 1000), channels: audioBuf.numberOfChannels, sampleRate: audioBuf.sampleRate, fade });
     return new Promise(resolve => {
-      src.onended = () => { if (currentAudioSrc === src) currentAudioSrc = null; resolve(true); };
+      src.onended = () => {
+        if (currentAudioSrc === src) currentAudioSrc = null;
+        const holdMs = Math.max(0, debugMeta.holdMs || 0);
+        debugLog('audio:end', { route: debugMeta.route || 'blob', token, holdMs });
+        if (holdMs && isPlaybackCurrent(token)) {
+          setTimeout(() => resolve(isPlaybackCurrent(token)), holdMs);
+        } else {
+          resolve(isPlaybackCurrent(token));
+        }
+      };
       src.start();
     });
   } catch (e) {
     console.warn('playAudioBlob error:', e.message);
+    debugLog('audio:error', { route: debugMeta.route || 'blob', token, error: e.message });
     return false;
   }
 }
@@ -872,6 +1154,7 @@ async function playAudioBlob(data, rate, token) {
 async function speakOneCached(text, rate, token) {
   if (!isPlaybackCurrent(token)) return false;
   if (!onlineTtsEnabled) {
+    debugLog('fallback:offline-system', { route: 'speak-one-cached', text, token, reason: 'online-disabled' });
     const voice = await resolveVoice();
     if (!voice) return false;
     if (!isPlaybackCurrent(token)) return false;
@@ -882,20 +1165,23 @@ async function speakOneCached(text, rate, token) {
     const cached = await ttsCache.get(cacheKey);
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
-      const ok = await playAudioBlob(cached, rate, token);
+      debugLog('clip:cache-hit', { route: 'independent-clip', text, token, cacheKey: cacheKey.slice(0, 18) });
+      const ok = await playAudioBlob(cached, rate, token, { route: 'independent-clip-cache', text });
       if (ok) return true;
       statusBar.textContent = `⚠ 缓存异常，重试在线...`;
     }
   }
   try {
+    debugLog('clip:fetch', { route: 'independent-clip', text, token });
     const blob = await fetchTtsFromMiniMax(text);
     if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     if (!isPlaybackCurrent(token)) return false;
     statusBar.textContent = `🔊: "${text}" (在线)`;
-    await playAudioBlob(blob, rate, token);
+    await playAudioBlob(blob, rate, token, { route: 'independent-clip-online', text });
     return true;
   } catch (e) {
     statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
+    debugLog('fallback:offline-system', { route: 'independent-clip', text, token, reason: e.message });
     const voice = await resolveVoice();
     if (!voice) return false;
     if (!isPlaybackCurrent(token)) return false;
@@ -909,34 +1195,39 @@ async function playSegmentClip(text, rate, token) {
   const cacheKey = clipCacheKey(text);
   try {
     let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
+    debugLog(blob ? 'clip:cache-hit' : 'clip:cache-miss', { route: 'exact-clip', text, token, cacheKey: cacheKey.slice(0, 18) });
     if (!blob) {
       blob = await fetchTtsFromMiniMax(text);
       if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     }
     if (!isPlaybackCurrent(token)) return false;
     statusBar.textContent = `🔊: "${text}" (精确clip)`;
-    return await playAudioBlob(blob, rate, token);
+    return await playAudioBlob(blob, rate, token, { route: 'exact-clip', text });
   } catch (e) {
     console.warn('[segment clip] failed', text, e.message);
+    debugLog('clip:error', { route: 'exact-clip', text, token, error: e.message });
     return false;
   }
 }
 
-function contextUnitForWord(si, wi) {
+function contextUnitForWord(si, wi, extraRadius = 0) {
   const s = currentSentences[si];
   const w = s?.words?.[wi];
-  if (!s || !w || w.type === 'punct' || w.type === 'space' || charLen(w.text) !== 1) return null;
+  const wLen = charLen(w?.text || '');
+  if (!s || !w || w.type === 'punct' || w.type === 'space' || wLen < 1 || wLen > 4) return null;
   const sentChars = textChars(s.text);
   const targetStart = w.start - s.start;
   const targetEnd = w.end - s.start;
   if (targetStart < 0 || targetEnd > sentChars.length || targetEnd <= targetStart) return null;
-  const radius = 4;
+  const radius = (wLen === 1 ? 4 : 3) + Math.max(0, extraRadius || 0);
   const contextStart = Math.max(0, targetStart - radius);
   const contextEnd = Math.min(sentChars.length, targetEnd + radius);
-  if (contextEnd - contextStart <= 1) return null;
+  if (contextEnd - contextStart <= wLen) return null;
   return {
     si, wi,
     text: w.text,
+    length: wLen,
+    variant: extraRadius ? 'wide' : 'default',
     contextText: sentChars.slice(contextStart, contextEnd).join(''),
     targetStart: targetStart - contextStart,
     targetEnd: targetEnd - contextStart
@@ -960,6 +1251,45 @@ function buildContextClipUnits() {
   return units;
 }
 
+function teachingRepeatUnitForWord(si, wi) {
+  const s = currentSentences[si];
+  const w = s?.words?.[wi];
+  const wLen = charLen(w?.text || '');
+  if (!s || !w || w.type === 'punct' || w.type === 'space' || wLen < 1 || wLen > 6) return null;
+  const sentenceText = String(s.text || '').trim();
+  if (!sentenceText) return null;
+  const pause = /[。！？.!?]$/u.test(sentenceText) ? '' : '。';
+  const prefix = sentenceText + pause + '\n';
+  return {
+    si, wi,
+    text: w.text,
+    length: wLen,
+    variant: 'teaching-repeat',
+    sentenceText,
+    teachingText: prefix + w.text,
+    targetStart: charLen(prefix),
+    targetEnd: charLen(prefix) + wLen
+  };
+}
+
+function buildTeachingRepeatClipUnits(filterKeys = null) {
+  const units = [];
+  const seen = new Set();
+  for (let si = 0; si < currentSentences.length; si++) {
+    const s = currentSentences[si];
+    for (let wi = 0; wi < s.words.length; wi++) {
+      if (filterKeys && !filterKeys.has(`${si}:${wi}`)) continue;
+      const unit = teachingRepeatUnitForWord(si, wi);
+      if (!unit) continue;
+      const key = teachingClipCacheKey(unit);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      units.push(unit);
+    }
+  }
+  return units;
+}
+
 function isCharRangeDirectTimed(clip, start, end) {
   if (!clip?.charTime || !clip?.charSource) return false;
   if (start < 0 || end > clip.charTime.length || end <= start) return false;
@@ -970,63 +1300,208 @@ function isCharRangeDirectTimed(clip, start, end) {
   return true;
 }
 
+function isContextRangeReliable(clip, start, end) {
+  return contextRangeReliability(clip, start, end).ok;
+}
+
+function contextRangeReliability(clip, start, end, opts = {}) {
+  if (!clip?.charTime || !clip?.charSource) return { ok: false, reason: 'missing-timing-arrays' };
+  if (start < 0 || end > clip.charTime.length || end <= start) return { ok: false, reason: 'bad-target-range' };
+  const len = end - start;
+  const allowed = len === 1 ? new Set(['char']) : new Set(['char', 'word']);
+  if (opts.allowExactItem) allowed.add('item');
+  const groups = clip.charGroup || [];
+  const wordGroups = new Set();
+  const itemGroups = new Set();
+  for (let i = start; i < end; i++) {
+    if (!clip.charTime[i]) return { ok: false, reason: 'missing-char-time', index: i };
+    if (!allowed.has(clip.charSource[i])) return { ok: false, reason: 'source-not-direct', index: i, source: clip.charSource[i] || '' };
+    if (clip.charTime[i][1] <= clip.charTime[i][0]) return { ok: false, reason: 'non-positive-duration', index: i };
+    if (clip.charSource[i] === 'word') {
+      if (!groups[i]) return { ok: false, reason: 'missing-word-group', index: i };
+      wordGroups.add(groups[i]);
+    } else if (clip.charSource[i] === 'item') {
+      if (!opts.allowExactItem) return { ok: false, reason: 'item-source-not-allowed', index: i };
+      if (!groups[i]) return { ok: false, reason: 'missing-item-group', index: i };
+      itemGroups.add(groups[i]);
+    }
+  }
+  for (const group of wordGroups) {
+    if (start > 0 && groups[start - 1] === group) return { ok: false, reason: 'group-start-outside-target', group };
+    if (end < groups.length && groups[end] === group) return { ok: false, reason: 'group-end-outside-target', group };
+  }
+  for (const group of itemGroups) {
+    if (start > 0 && groups[start - 1] === group) return { ok: false, reason: 'item-start-outside-target', group };
+    if (end < groups.length && groups[end] === group) return { ok: false, reason: 'item-end-outside-target', group };
+  }
+  return { ok: true, reason: 'ok', sources: clip.charSource.slice(start, end), groups: groups.slice(start, end) };
+}
+
 async function ensureContextClipCached(unit) {
   if (!unit || !cacheAvailable) return false;
   const key = contextClipCacheKey(unit);
   const cached = await ttsCache.get(key);
-  if (cached) return isCharRangeDirectTimed(cached, cached.targetStart, cached.targetEnd);
+  let staleReason = '';
+  if (cached) {
+    const cachedReliability = contextRangeReliability(cached, cached.targetStart, cached.targetEnd);
+    if (cachedReliability.ok) return { ...cachedReliability, fromCache: true };
+    staleReason = cachedReliability.reason || 'stale-low-confidence';
+    await ttsCache.delete(key);
+  }
   const clip = await fetchPreprocessClip(unit.contextText);
   const stored = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
-  if (!isCharRangeDirectTimed(stored, stored.targetStart, stored.targetEnd)) return false;
+  const reliability = contextRangeReliability(stored, stored.targetStart, stored.targetEnd);
+  if (!reliability.ok) return { ...reliability, staleReason };
   await ttsCache.set(key, stored);
-  return true;
+  return { ...reliability, staleReason };
 }
 
 async function preloadContextClips(units, onProgress) {
-  if (!cacheAvailable || !onlineTtsEnabled) return { ok: 0, fail: 0, total: 0 };
+  if (!cacheAvailable || !onlineTtsEnabled) return { ok: 0, fail: 0, total: 0, details: [] };
   let ok = 0, fail = 0;
+  const details = [];
   for (let i = 0; i < units.length; i++) {
     const unit = units[i];
     try {
-      if (await ensureContextClipCached(unit)) ok++;
-      else fail++;
+      const result = await ensureContextClipCached(unit);
+      if (result?.ok) ok++;
+      else {
+        fail++;
+        details.push({ si: unit.si, wi: unit.wi, text: unit.text, contextText: unit.contextText, variant: unit.variant || 'default', reason: result?.reason || 'unknown', staleReason: result?.staleReason || '', fromCache: !!result?.fromCache, targetStart: unit.targetStart, targetEnd: unit.targetEnd });
+      }
     } catch (e) {
       fail++;
+      details.push({ si: unit.si, wi: unit.wi, text: unit.text, contextText: unit.contextText, variant: unit.variant || 'default', reason: e.message, targetStart: unit.targetStart, targetEnd: unit.targetEnd });
       console.warn('[context clip] failed', unit.text, unit.contextText, e.message);
     }
     if (onProgress) onProgress(i + 1, units.length, ok, fail);
   }
-  return { ok, fail, total: units.length };
+  return { ok, fail, total: units.length, details: details.slice(0, 80) };
+}
+
+async function ensureTeachingRepeatClipCached(unit) {
+  if (!unit || !cacheAvailable) return false;
+  const key = teachingClipCacheKey(unit);
+  const cached = await ttsCache.get(key);
+  let staleReason = '';
+  if (cached) {
+    const cachedReliability = contextRangeReliability(cached, cached.targetStart, cached.targetEnd, { allowExactItem: true });
+    if (cachedReliability.ok) return { ...cachedReliability, fromCache: true };
+    staleReason = cachedReliability.reason || 'stale-low-confidence';
+    await ttsCache.delete(key);
+  }
+  const clip = await fetchPreprocessClip(unit.teachingText);
+  const stored = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, sentenceText: unit.sentenceText, teachingText: unit.teachingText };
+  const reliability = contextRangeReliability(stored, stored.targetStart, stored.targetEnd, { allowExactItem: true });
+  if (!reliability.ok) return { ...reliability, staleReason };
+  await ttsCache.set(key, stored);
+  return { ...reliability, staleReason };
+}
+
+async function preloadTeachingRepeatClips(units, onProgress) {
+  if (!cacheAvailable || !onlineTtsEnabled) return { ok: 0, fail: 0, total: 0, details: [] };
+  let ok = 0, fail = 0;
+  const details = [];
+  for (let i = 0; i < units.length; i++) {
+    const unit = units[i];
+    try {
+      const result = await ensureTeachingRepeatClipCached(unit);
+      if (result?.ok) ok++;
+      else {
+        fail++;
+        details.push({ si: unit.si, wi: unit.wi, text: unit.text, teachingText: unit.teachingText, reason: result?.reason || 'unknown', staleReason: result?.staleReason || '', targetStart: unit.targetStart, targetEnd: unit.targetEnd });
+      }
+    } catch (e) {
+      fail++;
+      details.push({ si: unit.si, wi: unit.wi, text: unit.text, teachingText: unit.teachingText, reason: e.message, targetStart: unit.targetStart, targetEnd: unit.targetEnd });
+      console.warn('[teaching clip] failed', unit.text, unit.teachingText, e.message);
+    }
+    if (onProgress) onProgress(i + 1, units.length, ok, fail);
+  }
+  return { ok, fail, total: units.length, details: details.slice(0, 80) };
 }
 
 async function playContextSegmentClip(unit, rate, token) {
   if (!unit || !onlineTtsEnabled) return false;
   if (!isPlaybackCurrent(token)) return false;
   const key = contextClipCacheKey(unit);
+  const route = unit.variant === 'wide' ? 'context-clip-wide' : 'context-clip';
   try {
     let clip = cacheAvailable ? await ttsCache.get(key) : null;
+    const fromCache = !!clip;
+    debugLog(clip ? 'clip:cache-hit' : 'clip:cache-miss', { route, text: unit.text, contextText: unit.contextText, targetStart: unit.targetStart, targetEnd: unit.targetEnd, token, cacheKey: key.slice(0, 18) });
     if (!clip) {
       clip = await fetchPreprocessClip(unit.contextText);
       clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
-      if (cacheAvailable) await ttsCache.set(key, clip);
     }
     if (!isPlaybackCurrent(token)) return false;
-    if (!isCharRangeDirectTimed(clip, clip.targetStart, clip.targetEnd)) {
+    const reliability = contextRangeReliability(clip, clip.targetStart, clip.targetEnd);
+    if (!reliability.ok) {
       console.warn('[context segment clip] low confidence', unit.text, unit.contextText, clip.charSource?.slice(clip.targetStart, clip.targetEnd));
+      if (fromCache && cacheAvailable) await ttsCache.delete(key);
+      debugLog('clip:reject', { route, text: unit.text, contextText: unit.contextText, token, reason: reliability.reason, fromCache, targetLength: clip.targetEnd - clip.targetStart, sources: clip.charSource?.slice(clip.targetStart, clip.targetEnd) || [], groups: clip.charGroup?.slice(clip.targetStart, clip.targetEnd) || [], targetWindow: clipDebugWindow(clip, clip.targetStart, clip.targetEnd), subtitleDebug: (clip.subtitleDebug || []).slice(0, 6) });
       return false;
     }
+    debugLog('clip:accept', { route, text: unit.text, contextText: unit.contextText, token, fromCache, reliability, targetWindow: clipDebugWindow(clip, clip.targetStart, clip.targetEnd), subtitleDebug: (clip.subtitleDebug || []).slice(0, 6) });
+    if (!fromCache && cacheAvailable) await ttsCache.set(key, clip);
     const ok = await playPcmCharRange(clip, clip.targetStart, clip.targetEnd, rate, {
       guardNeighbors: true,
       neighborBorrowMs: 36,
       prePadMs: 36,
       postPadMs: 48,
       minMs: 230,
-      token
+      rejectBelowMs: (clip.targetEnd - clip.targetStart) <= 1 ? 165 : 120,
+      snapToLowEnergy: true,
+      token,
+      debug: { route: route + '-range', kind: 'word', text: unit.text, contextText: unit.contextText }
     });
-    if (ok) statusBar.textContent = `🔊: "${unit.text}" (上下文clip)`;
+    if (ok) statusBar.textContent = `🔊: "${unit.text}" (${unit.variant === 'wide' ? '宽上下文' : '上下文'}clip)`;
     return ok;
   } catch (e) {
     console.warn('[context segment clip] failed', unit.text, e.message);
+    debugLog('clip:error', { route, text: unit?.text, token, error: e.message });
+    return false;
+  }
+}
+
+async function playTeachingRepeatClip(unit, rate, token) {
+  if (!unit || !onlineTtsEnabled) return false;
+  if (!isPlaybackCurrent(token)) return false;
+  const key = teachingClipCacheKey(unit);
+  const route = 'teaching-repeat-clip';
+  try {
+    let clip = cacheAvailable ? await ttsCache.get(key) : null;
+    const fromCache = !!clip;
+    debugLog(clip ? 'clip:cache-hit' : 'clip:cache-miss', { route, text: unit.text, teachingText: unit.teachingText, targetStart: unit.targetStart, targetEnd: unit.targetEnd, token, cacheKey: key.slice(0, 18) });
+    if (!clip) {
+      clip = await fetchPreprocessClip(unit.teachingText);
+      clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, sentenceText: unit.sentenceText, teachingText: unit.teachingText };
+    }
+    if (!isPlaybackCurrent(token)) return false;
+    const reliability = contextRangeReliability(clip, clip.targetStart, clip.targetEnd, { allowExactItem: true });
+    if (!reliability.ok) {
+      if (fromCache && cacheAvailable) await ttsCache.delete(key);
+      debugLog('clip:reject', { route, text: unit.text, teachingText: unit.teachingText, token, reason: reliability.reason, fromCache, targetLength: clip.targetEnd - clip.targetStart, sources: clip.charSource?.slice(clip.targetStart, clip.targetEnd) || [], groups: clip.charGroup?.slice(clip.targetStart, clip.targetEnd) || [], targetWindow: clipDebugWindow(clip, clip.targetStart, clip.targetEnd), subtitleDebug: (clip.subtitleDebug || []).slice(0, 6) });
+      return false;
+    }
+    debugLog('clip:accept', { route, text: unit.text, teachingText: unit.teachingText, token, fromCache, reliability, targetWindow: clipDebugWindow(clip, clip.targetStart, clip.targetEnd), subtitleDebug: (clip.subtitleDebug || []).slice(0, 6) });
+    if (!fromCache && cacheAvailable) await ttsCache.set(key, clip);
+    const ok = await playPcmCharRange(clip, clip.targetStart, clip.targetEnd, rate, {
+      guardNeighbors: true,
+      neighborBorrowMs: 80,
+      prePadMs: 90,
+      postPadMs: 130,
+      minMs: (clip.targetEnd - clip.targetStart) <= 1 ? 260 : 230,
+      rejectBelowMs: (clip.targetEnd - clip.targetStart) <= 1 ? 180 : 135,
+      snapToLowEnergy: true,
+      token,
+      debug: { route: route + '-range', kind: 'word', text: unit.text, teachingText: unit.teachingText }
+    });
+    if (ok) statusBar.textContent = `🔊: "${unit.text}" (上下文复读clip)`;
+    return ok;
+  } catch (e) {
+    console.warn('[teaching clip] failed', unit?.text, e.message);
+    debugLog('clip:error', { route, text: unit?.text, token, error: e.message });
     return false;
   }
 }
@@ -1090,23 +1565,45 @@ preprocessBtn.addEventListener('click', async () => {
   const totalChars = charLen(text);
   if (!text) { showToast('请先输入文本'); return; }
   renderSentences(text);
+  const alignmentSignature = currentAlignmentSignature();
+  debugLog('preprocess:start', { textLength: totalChars, sentences: currentSentences.length, voice: minimaxVoice, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature });
 
   preprocessing = true;
   preprocessBar.style.display = '';
   preprocessFill.style.width = '0%';
   preprocessBtn.disabled = true;
 
-  const hkey = hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + text);
+  const hkey = hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + alignmentSignature + '|' + text);
 
   // 检查 IndexedDB 缓存
   if (cacheAvailable) {
     const cached = await ttsCache.get(hkey);
-    if (cached && cached.pcm && cached.charTime && cached.alignVersion === ALIGN_SCHEMA_VERSION) {
-      songData = { pcm: cached.pcm, charTime: cached.charTime, sentenceRanges: cached.sentenceRanges || [], sr: cached.sr, ch: cached.ch, bits: cached.bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
+    const cacheIssue = cachedSongDataIssue(cached, alignmentSignature, totalChars);
+    if (cached && !cacheIssue) {
+      songData = {
+        pcm: cached.pcm,
+        charTime: cached.charTime,
+        charSource: cached.charSource || [],
+        charGroup: cached.charGroup || [],
+        sentenceRanges: cached.sentenceRanges || [],
+        chunkReports: cached.chunkReports || [],
+        sr: cached.sr,
+        ch: cached.ch,
+        bits: cached.bits,
+        text,
+        alignVersion: ALIGN_SCHEMA_VERSION,
+        alignmentSignature
+      };
+      const ds = songDebugSummary();
+      debugLog('preprocess:cache-hit', { textLength: totalChars, covered: ds.covered, total: ds.textLength, sources: ds.sources, chunks: ds.chunkReports.length, diagnostics: analyzeAlignment().riskCounts || null });
+      renderDebugPanel();
       statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
       return;
+    } else if (cached && cacheIssue) {
+      debugLog('preprocess:cache-bypass', { reason: cacheIssue, alignmentSignature, cachedSignature: cached.alignmentSignature || '', cachedVersion: cached.alignVersion || '' });
+      await ttsCache.delete(hkey);
     }
   }
 
@@ -1115,24 +1612,37 @@ preprocessBtn.addEventListener('click', async () => {
 
   // 逐句预处理：句间停顿用真实静音拼接，避免停顿标记污染字幕坐标
   const SENT_PER_CHUNK = 1;
-  const SENTENCE_GAP_MS = 430;
-  const FINAL_TAIL_MS = 220;
-  const sents = splitSentences(text);
+  const LEAD_SILENCE_MS = 140;
+  const SENTENCE_GAP_MS = 950;
+  const FINAL_TAIL_MS = 900;
+  const sentenceUnits = currentSentences
+    .filter(s => s.text && charLen(s.text) > 0)
+    .map((s, si) => ({ si, text: s.text, charStart: s.start, charEnd: s.end }));
   const chunks = [];
-  for (let i = 0; i < sents.length; i += SENT_PER_CHUNK) {
-    chunks.push(sents.slice(i, i + SENT_PER_CHUNK).join(''));
+  for (let i = 0; i < sentenceUnits.length; i += SENT_PER_CHUNK) {
+    const units = sentenceUnits.slice(i, i + SENT_PER_CHUNK);
+    chunks.push({
+      ci: chunks.length,
+      si: units[0].si,
+      text: units.map(u => u.text).join(''),
+      charStart: units[0].charStart,
+      charEnd: units[units.length - 1].charEnd
+    });
   }
 
   try {
     const allPcmChunks = [];
-    const allCharTime = [];
+    const allCharTime = new Array(totalChars);
+    const allCharSource = new Array(totalChars);
+    const allCharGroup = new Array(totalChars);
     const sentenceRanges = [];
-    let charOffset = 0;
+    const chunkReports = [];
     let timeOffsetMs = 0;
     let sr = 32000, ch = 1, bits = 16;
 
     for (let ci = 0; ci < chunks.length; ci++) {
-      const chunk = chunks[ci];
+      const chunkInfo = chunks[ci];
+      const chunk = chunkInfo.text;
       const pct = 10 + Math.round(80 * ci / chunks.length);
       statusBar.textContent = `⚡ 预处理第 ${ci+1}/${chunks.length} 批 (${chunk.length}字)...`;
       preprocessFill.style.width = pct + '%';
@@ -1161,35 +1671,71 @@ preprocessBtn.addEventListener('click', async () => {
       const bytesPerMs = bytesPerMsFor(sr, ch, bits);
       const chunkDurationMs = pcm.length / bytesPerMs;
       const gapMs = ci < chunks.length - 1 ? SENTENCE_GAP_MS : FINAL_TAIL_MS;
-      const silence = makeSilencePcm(gapMs, sr, ch, bits);
-      const silenceMs = silence.length / bytesPerMs;
+      const leadSilence = makeSilencePcm(LEAD_SILENCE_MS, sr, ch, bits);
+      const tailSilence = makeSilencePcm(gapMs, sr, ch, bits);
+      const leadMs = leadSilence.length / bytesPerMs;
+      const silenceMs = tailSilence.length / bytesPerMs;
       const sentenceStartMs = timeOffsetMs;
-      const sentenceEndMs = timeOffsetMs + chunkDurationMs + silenceMs;
+      const speechStartMs = timeOffsetMs + leadMs;
+      const audioEndMs = speechStartMs + chunkDurationMs;
+      const sentenceEndMs = audioEndMs + silenceMs;
+      if (leadSilence.length) allPcmChunks.push(leadSilence);
       allPcmChunks.push(pcm);
-      if (silence.length) allPcmChunks.push(silence);
+      if (tailSilence.length) allPcmChunks.push(tailSilence);
       sentenceRanges.push({
         startMs: sentenceStartMs,
         endMs: sentenceEndMs,
-        audioEndMs: timeOffsetMs + chunkDurationMs,
-        charStart: charOffset,
-        charEnd: charOffset + charLen(chunk)
+        speechStartMs,
+        audioEndMs,
+        leadMs,
+        silenceMs,
+        charStart: chunkInfo.charStart,
+        charEnd: chunkInfo.charEnd
       });
 
       // 合并 charTime：偏移时间 + 偏移字符位置
       const ct = pd.char_time;
+      const cs = pd.char_source || [];
+      const cg = pd.char_group || [];
       let batchCovered = 0;
+      const firstMissing = [];
       for (let i = 0; i < ct.length; i++) {
+        const globalChar = chunkInfo.charStart + i;
+        if (globalChar < chunkInfo.charStart || globalChar >= chunkInfo.charEnd || globalChar >= totalChars) continue;
         if (ct[i]) {
-          allCharTime[charOffset + i] = [
-            ct[i][0] + timeOffsetMs,
-            ct[i][1] + timeOffsetMs
+          allCharTime[globalChar] = [
+            ct[i][0] + speechStartMs,
+            ct[i][1] + speechStartMs
           ];
+          allCharSource[globalChar] = cs[i] || 'unknown';
+          allCharGroup[globalChar] = cg[i] || '';
           batchCovered++;
+        } else if (firstMissing.length < 8) {
+          firstMissing.push(i);
         }
       }
+      const sourceCount = pd.coverage?.sources || sourceCounts(cs);
+      const report = {
+        ci,
+        si: chunkInfo.si,
+        text: chunk,
+        charStart: chunkInfo.charStart,
+        charEnd: chunkInfo.charEnd,
+        textLength: charLen(chunk),
+        audioMs: Math.round(chunkDurationMs),
+        leadMs: Math.round(leadMs),
+        silenceMs: Math.round(silenceMs),
+        covered: pd.coverage?.covered ?? batchCovered,
+        total: pd.coverage?.total ?? ct.length,
+        sources: sourceCount,
+        firstMissing,
+        subtitleDebug: pd.subtitle_debug || []
+      };
+      chunkReports.push(report);
+      const { subtitleDebug, ...chunkEvent } = report;
+      debugLog('preprocess:chunk', chunkEvent);
       console.log(`批次${ci+1}: ${chunk.length}字, charTime覆盖${batchCovered}/${ct.length}, 音频${chunkDurationMs.toFixed(0)}ms`);
-      charOffset += charLen(chunk);
-      timeOffsetMs += chunkDurationMs + silenceMs;
+      timeOffsetMs = sentenceEndMs;
     }
 
     // 拼接所有 PCM
@@ -1201,10 +1747,10 @@ preprocessBtn.addEventListener('click', async () => {
 
     preprocessFill.style.width = '90%';
     statusBar.textContent = '⚡ 缓存中...';
-    songData = { pcm: combinedPcm, charTime: allCharTime, sentenceRanges, sr, ch, bits, text, alignVersion: ALIGN_SCHEMA_VERSION };
+    songData = { pcm: combinedPcm, charTime: allCharTime, charSource: allCharSource, charGroup: allCharGroup, sentenceRanges, chunkReports, sr, ch, bits, text, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature };
 
     if (cacheAvailable) {
-      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, sentenceRanges, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION });
+      await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, charSource: allCharSource, charGroup: allCharGroup, sentenceRanges, chunkReports, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature });
     }
 
     preprocessFill.style.width = '92%';
@@ -1217,17 +1763,27 @@ preprocessBtn.addEventListener('click', async () => {
     preprocessFill.style.width = '99%';
     const contextUnits = buildContextClipUnits();
     const contextResult = await preloadContextClips(contextUnits, (done, total, ok, fail) => {
-      statusBar.textContent = `⚡ 准备单字上下文 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
+      statusBar.textContent = `⚡ 准备短词上下文 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
+    });
+    const failedContextKeys = new Set((contextResult.details || []).filter(d => d.si != null && d.wi != null).map(d => `${d.si}:${d.wi}`));
+    const teachingUnits = buildTeachingRepeatClipUnits(failedContextKeys);
+    const teachingResult = await preloadTeachingRepeatClips(teachingUnits, (done, total, ok, fail) => {
+      statusBar.textContent = `⚡ 准备上下文复读 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
     });
 
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
+    const spokenTotal = chunks.reduce((sum, c) => sum + charLen(c.text), 0);
     const clipMsg = clipResult.total ? `, 字词clip ${clipResult.ok}/${clipResult.total}` : '';
-    const contextMsg = contextResult.total ? `, 上下文clip ${contextResult.ok}/${contextResult.total}` : '';
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${text.length}字有时间戳${clipMsg}${contextMsg})`;
+    const contextMsg = contextResult.total ? `, 短词上下文 ${contextResult.ok}/${contextResult.total}` : '';
+    const teachingMsg = teachingResult.total ? `, 上下文复读 ${teachingResult.ok}/${teachingResult.total}` : '';
+    debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, clipResult, contextResult, teachingResult, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
+    renderDebugPanel();
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳${clipMsg}${contextMsg}${teachingMsg})`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
+    debugLog('preprocess:error', { error: e.message });
     showToast(e.message);
   }
 
@@ -1250,9 +1806,11 @@ document.getElementById('debugTtsBtn').addEventListener('click', async () => {
   try {
     const resp = await fetch('/debug-tts');
     const txt = await resp.text();
+    debugLog('worker:debug-tts', { ok: resp.ok, text: txt.slice(0, 900) });
     showToast(txt);
     statusBar.textContent = '🔧 ' + txt;
   } catch (e) {
+    debugLog('worker:debug-tts-error', { error: e.message });
     showToast('测试失败: ' + e.message);
   }
 });
@@ -1260,6 +1818,10 @@ document.getElementById('debugTtsBtn').addEventListener('click', async () => {
 // 调试 charTime 对齐
 document.getElementById('debugCharTimeBtn').addEventListener('click', () => {
   if (!songData) { showToast('请先预处理'); return; }
+  if (!debugEnabled) {
+    debugEnabled = true;
+    localStorage.setItem('ttsDebugPanel', '1');
+  }
   const { charTime, pcm, sr, text } = songData;
   const chars = textChars(text);
   const totalChars = chars.length;
@@ -1297,8 +1859,10 @@ document.getElementById('debugCharTimeBtn').addEventListener('click', () => {
 
   const info = lines.join('\n');
   console.log('charTime debug:\n' + info);
-  showToast('已输出到控制台 (F12)');
-  statusBar.textContent = `🎯 覆盖${covered}/${text.length} (${(covered/text.length*100).toFixed(0)}%)`;
+  debugLog('manual:char-time-snapshot', { covered, total: totalChars, sources: sourceCounts(songData.charSource), gaps: gaps.slice(0, 10), diagnostics: analyzeAlignment().riskCounts || null });
+  renderDebugPanel();
+  showToast('已打开调试面板');
+  statusBar.textContent = `🎯 覆盖${covered}/${totalChars} (${(covered/totalChars*100).toFixed(0)}%)`;
 });
 
 // 页面加载时初始化缓存
@@ -1356,6 +1920,15 @@ const closeHistoryBtn = document.getElementById('closeHistoryBtn');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const statusBar = document.getElementById('statusBar');
 const toast = document.getElementById('toast');
+const debugPanel = document.getElementById('debugPanel');
+const debugPanelBtn = document.getElementById('debugPanelBtn');
+const debugBadge = document.getElementById('debugBadge');
+const debugSelectionEl = document.getElementById('debugSelection');
+const debugSummaryEl = document.getElementById('debugSummary');
+const debugLogView = document.getElementById('debugLogView');
+const copyDebugBtn = document.getElementById('copyDebugBtn');
+const downloadDebugBtn = document.getElementById('downloadDebugBtn');
+const clearDebugBtn = document.getElementById('clearDebugBtn');
 
 let currentSentences = [];
 let showJyutping = false;
@@ -1373,6 +1946,458 @@ soloJpToggle.addEventListener('change', () => {
   soloJyutping = soloJpToggle.checked;
   renderSentences(inputEl.value || '');
 });
+
+const DEBUG_MAX_EVENTS = 420;
+let debugEnabled = localStorage.getItem('ttsDebugPanel') === '1' || new URLSearchParams(location.search).has('debug');
+let debugEvents = [];
+let debugLastSelection = null;
+
+function fmtMs(v) {
+  return Number.isFinite(v) ? Math.round(v) + 'ms' : '∅';
+}
+
+function compactPreview(text, n = 70) {
+  const s = String(text || '');
+  return s.length > n ? s.slice(0, n) + '...' : s;
+}
+
+function sourceCounts(list) {
+  const out = {};
+  for (const s of list || []) if (s) out[s] = (out[s] || 0) + 1;
+  return out;
+}
+
+function timingInfoForRange(startChar, endChar, source = songData) {
+  const total = Math.max(0, endChar - startChar);
+  const info = { startChar, endChar, total, covered: 0, missing: [], startMs: null, endMs: null, sources: {}, groups: {} };
+  const ct = source?.charTime || [];
+  const cs = source?.charSource || [];
+  const cg = source?.charGroup || [];
+  for (let i = startChar; i < endChar; i++) {
+    if (ct[i]) {
+      info.covered++;
+      info.startMs = info.startMs == null ? ct[i][0] : Math.min(info.startMs, ct[i][0]);
+      info.endMs = info.endMs == null ? ct[i][1] : Math.max(info.endMs, ct[i][1]);
+      const src = cs[i] || 'unknown';
+      info.sources[src] = (info.sources[src] || 0) + 1;
+      if (cg[i]) info.groups[cg[i]] = (info.groups[cg[i]] || 0) + 1;
+    } else {
+      info.missing.push(i);
+    }
+  }
+  return info;
+}
+
+function groupBoundaryIssuesForRange(source, startChar, endChar) {
+  const issues = [];
+  const groups = source?.charGroup || [];
+  const sources = source?.charSource || [];
+  if (!groups.length) return issues;
+  const seen = new Set();
+  for (let i = startChar; i < endChar; i++) {
+    const group = groups[i];
+    if (!group || seen.has(group) || sources[i] !== 'word') continue;
+    seen.add(group);
+    const startsBefore = startChar > 0 && groups[startChar - 1] === group;
+    const endsAfter = endChar < groups.length && groups[endChar] === group;
+    if (startsBefore || endsAfter) issues.push({ group, startsBefore, endsAfter });
+  }
+  return issues;
+}
+
+function timingClassForRange(startChar, endChar) {
+  if (!songData?.charTime) return 'dbg-unknown';
+  const info = timingInfoForRange(startChar, endChar);
+  if (info.missing.length || info.covered < info.total) return 'dbg-missing';
+  const weak = ['gap', 'lead', 'tail', 'item', 'word_est', 'unknown'];
+  return weak.some(s => info.sources[s]) ? 'dbg-est' : 'dbg-direct';
+}
+
+function timingLine(info) {
+  const src = Object.entries(info.sources).map(([k, v]) => `${k}:${v}`).join(', ') || 'none';
+  const grpCount = info.groups ? Object.keys(info.groups).length : 0;
+  const grp = grpCount ? `, groups=${grpCount}` : '';
+  const miss = info.missing.length ? `, missing=${info.missing.slice(0, 8).join('/')}${info.missing.length > 8 ? '...' : ''}` : '';
+  return `[${info.startChar}-${info.endChar}) ${fmtMs(info.startMs)}-${fmtMs(info.endMs)}, covered=${info.covered}/${info.total}, source=${src}${grp}${miss}`;
+}
+
+function compactRanges(items, max = 12) {
+  const nums = Array.from(new Set(items || [])).filter(Number.isFinite).sort((a, b) => a - b);
+  const ranges = [];
+  let i = 0;
+  while (i < nums.length && ranges.length < max) {
+    const start = nums[i];
+    let end = start;
+    while (i + 1 < nums.length && nums[i + 1] === end + 1) {
+      i++;
+      end = nums[i];
+    }
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+    i++;
+  }
+  return { ranges, total: nums.length, truncated: i < nums.length };
+}
+
+function selectedCharWindow(start, end, source = songData, radius = 3) {
+  const text = textChars(source?.text || inputEl?.value || '');
+  const from = Math.max(0, start - radius);
+  const to = Math.min(text.length, end + radius);
+  const out = [];
+  for (let i = from; i < to; i++) {
+    const ct = source?.charTime?.[i];
+    out.push({
+      i,
+      ch: text[i] || '',
+      inTarget: i >= start && i < end,
+      time: ct ? [Math.round(ct[0]), Math.round(ct[1])] : null,
+      durMs: ct ? Math.round(ct[1] - ct[0]) : null,
+      source: source?.charSource?.[i] || null,
+      group: source?.charGroup?.[i] || null
+    });
+  }
+  return out;
+}
+
+function clipDebugWindow(clip, start, end, radius = 3) {
+  if (!clip) return [];
+  return selectedCharWindow(start, end, clip, radius);
+}
+
+function routePlanForSelection(selection = debugLastSelection) {
+  if (!selection || selection.kind !== 'word' || selection.si == null || selection.wi == null) return null;
+  const si = selection.si, wi = selection.wi;
+  const s = currentSentences[si];
+  const w = s?.words?.[wi];
+  if (!s || !w) return null;
+  const defaultContext = contextUnitForWord(si, wi);
+  const wideContext = contextUnitForWord(si, wi, 6);
+  const teaching = teachingRepeatUnitForWord(si, wi);
+  const songReliability = songData ? contextRangeReliability(songData, w.start, w.end) : { ok: false, reason: 'missing-songData' };
+  return {
+    text: w.text,
+    charRange: [w.start, w.end],
+    defaultContext,
+    wideContext,
+    teaching,
+    songRangeReliability: songReliability
+  };
+}
+
+function playbackTraceForToken(token) {
+  if (token == null) return null;
+  const interesting = new Set(['play:route-result', 'play:route-skip', 'clip:accept', 'clip:reject', 'clip:error', 'range:computed', 'range:reject', 'audio:slice', 'audio:start', 'audio:end', 'play:reliable-audio-missing']);
+  const events = debugEvents
+    .filter(ev => ev.token === token && interesting.has(ev.type))
+    .map(ev => {
+      const copy = { ...ev };
+      delete copy.at;
+      return copy;
+    });
+  return {
+    token,
+    routeResults: events.filter(ev => ev.type === 'play:route-result').map(ev => ({ route: ev.route, ok: ev.ok, text: ev.text || '', si: ev.si, wi: ev.wi })),
+    skips: events.filter(ev => ev.type === 'play:route-skip').map(ev => ({ route: ev.route, reason: ev.reason, text: ev.text || '' })),
+    accepts: events.filter(ev => ev.type === 'clip:accept').map(ev => ({ route: ev.route, text: ev.text || '', fromCache: !!ev.fromCache, reliability: ev.reliability || null })),
+    rejects: events.filter(ev => ev.type === 'clip:reject' || ev.type === 'range:reject' || ev.type === 'clip:error').map(ev => ({ type: ev.type, route: ev.route, reason: ev.reason || ev.error || '', text: ev.text || '', sources: ev.sources || null, groups: ev.groups || null })),
+    slices: events.filter(ev => ev.type === 'audio:slice').map(ev => ({ route: ev.route, text: ev.text || '', startMs: ev.startMs, endMs: ev.endMs, sliceStartMs: ev.sliceStartMs, sliceEndMs: ev.sliceEndMs, boundary: ev.boundary || null })),
+    events
+  };
+}
+
+function analyzeAlignment() {
+  if (!songData?.charTime) return { ready: false };
+  const chars = textChars(songData.text || '');
+  const missing = [];
+  const weak = [];
+  const short = [];
+  const overlap = [];
+  const groupBoundary = [];
+  const weakSources = new Set(['gap', 'lead', 'tail', 'item', 'word_est', 'unknown']);
+  let prevEnd = null;
+
+  for (let i = 0; i < chars.length; i++) {
+    const ct = songData.charTime[i];
+    const src = songData.charSource?.[i] || (ct ? 'unknown' : '');
+    const silentChar = /\s/u.test(chars[i] || '');
+    if (!ct) {
+      if (!silentChar) missing.push(i);
+      continue;
+    }
+    if (silentChar) continue;
+    const dur = ct[1] - ct[0];
+    if (weakSources.has(src)) weak.push(i);
+    if (/[\u4e00-\u9fff]/u.test(chars[i]) && dur < 70) short.push({ i, ch: chars[i], durMs: Math.round(dur), source: src });
+    if (prevEnd != null && ct[0] < prevEnd - 5) overlap.push({ i, ch: chars[i], startMs: Math.round(ct[0]), prevEndMs: Math.round(prevEnd) });
+    prevEnd = Math.max(prevEnd ?? 0, ct[1]);
+  }
+
+  for (const s of currentSentences) {
+    for (const w of s.words || []) {
+      if (w.type === 'punct' || w.type === 'space') continue;
+      const issues = groupBoundaryIssuesForRange(songData, w.start, w.end);
+      if (issues.length) {
+        groupBoundary.push({ text: w.text, start: w.start, end: w.end, issues });
+        if (groupBoundary.length >= 30) break;
+      }
+    }
+    if (groupBoundary.length >= 30) break;
+  }
+
+  const sentenceMargins = currentSentences.map((s, si) => {
+    const info = timingInfoForRange(s.start, s.end);
+    const r = songData.sentenceRanges?.[si] || null;
+    const lastIdx = Math.max(s.start, s.end - 1);
+    const lastChar = chars[lastIdx] || '';
+    const audioTailMs = r && info.endMs != null ? Math.round((r.audioEndMs ?? r.endMs) - info.endMs) : null;
+    const paddedTailMs = r && info.endMs != null ? Math.round(r.endMs - info.endMs) : null;
+    const headLeadMs = r && info.startMs != null ? Math.round(info.startMs - r.startMs) : null;
+    return {
+      si,
+      text: compactPreview(s.text, 42),
+      charRange: [s.start, s.end],
+      lastChar,
+      timing: { startMs: Math.round(info.startMs ?? 0), endMs: Math.round(info.endMs ?? 0), covered: info.covered, total: info.total, sources: info.sources },
+      sentenceRange: r ? { startMs: Math.round(r.startMs), speechStartMs: Math.round(r.speechStartMs ?? r.startMs), audioEndMs: Math.round(r.audioEndMs ?? r.endMs), endMs: Math.round(r.endMs), leadMs: Math.round(r.leadMs || 0), silenceMs: Math.round(r.silenceMs || 0) } : null,
+      headLeadMs,
+      audioTailMs,
+      paddedTailMs,
+      risk: info.covered < info.total ? 'missing-char-time' : (paddedTailMs != null && paddedTailMs < 220 ? 'tail-too-tight' : 'ok')
+    };
+  });
+
+  return {
+    ready: true,
+    missing: compactRanges(missing),
+    weak: compactRanges(weak),
+    shortChars: short.slice(0, 30),
+    overlaps: overlap.slice(0, 30),
+    groupBoundary,
+    sentenceMargins,
+    riskCounts: {
+      missing: missing.length,
+      weak: weak.length,
+      short: short.length,
+      overlap: overlap.length,
+      groupBoundary: groupBoundary.length,
+      textLengthDelta: (songData.charTime?.length || 0) - charLen(songData.text || ''),
+      tightSentenceTail: sentenceMargins.filter(x => x.risk === 'tail-too-tight').length
+    }
+  };
+}
+
+function debugLog(type, data = {}) {
+  const ev = { at: new Date().toISOString(), ms: Math.round(performance.now()), type, ...data };
+  debugEvents.push(ev);
+  if (debugEvents.length > DEBUG_MAX_EVENTS) debugEvents = debugEvents.slice(-DEBUG_MAX_EVENTS);
+  if (debugEnabled) renderDebugPanel();
+  return ev;
+}
+
+function setDebugSelection(selection) {
+  debugLastSelection = selection;
+  debugLog('select', selection);
+}
+
+function songDebugSummary() {
+  if (!songData) return { exists: false };
+  const bytesPerMs = bytesPerMsFor(songData.sr || 32000, songData.ch || 1, songData.bits || 16);
+  const audioMs = songData.pcm && bytesPerMs ? songData.pcm.length / bytesPerMs : 0;
+  const covered = songData.charTime ? songData.charTime.filter(Boolean).length : 0;
+  const total = charLen(songData.text || '');
+  const spokenTextLength = currentSentences.reduce((sum, s) => sum + charLen(s.text || ''), 0);
+  const timelineLength = songData.charTime?.length || 0;
+  const chunkTextLength = (songData.chunkReports || []).reduce((sum, c) => sum + (c.textLength || 0), 0);
+  return {
+    exists: true,
+    alignVersion: songData.alignVersion || '',
+    alignmentSignature: songData.alignmentSignature || '',
+    voice: minimaxVoice,
+    textLength: total,
+    spokenTextLength,
+    inputLength: charLen(inputEl.value || ''),
+    timelineLength,
+    chunkTextLength,
+    textLengthDelta: timelineLength - total,
+    audioMs: Math.round(audioMs),
+    audioKB: songData.pcm ? Math.round(songData.pcm.length / 1024) : 0,
+    format: `${songData.sr || '?'}Hz/${songData.ch || '?'}ch/${songData.bits || '?'}bit`,
+    covered,
+    coveragePct: spokenTextLength ? Math.round(covered * 100 / spokenTextLength) : 0,
+    sources: sourceCounts(songData.charSource),
+    sentenceRanges: songData.sentenceRanges || [],
+    chunkReports: songData.chunkReports || []
+  };
+}
+
+function buildDebugReport() {
+  const summary = songDebugSummary();
+  const diagnostics = analyzeAlignment();
+  return {
+    generatedAt: new Date().toISOString(),
+    location: location.href,
+    userAgent: navigator.userAgent,
+    settings: {
+      onlineTtsEnabled,
+      isolatedCharFallbackEnabled,
+      minimaxVoice,
+      alignVersion: ALIGN_SCHEMA_VERSION,
+      rate: parseFloat(speedRange.value),
+      volume: parseFloat(volumeRange.value),
+      cacheAvailable
+    },
+    input: {
+      length: charLen(inputEl.value || ''),
+      text: inputEl.value || ''
+    },
+    songData: summary,
+    diagnostics,
+    sentences: currentSentences.map((s, si) => ({
+      si,
+      text: s.text,
+      start: s.start,
+      end: s.end,
+      timing: timingInfoForRange(s.start, s.end),
+      words: s.words.map((w, wi) => ({
+        wi,
+        text: w.text,
+        type: w.type,
+        start: w.start,
+        end: w.end,
+        timing: timingInfoForRange(w.start, w.end)
+      }))
+    })),
+    lastSelection: debugLastSelection ? {
+      ...debugLastSelection,
+      timing: debugLastSelection.start != null ? timingInfoForRange(debugLastSelection.start, debugLastSelection.end) : null,
+      charWindow: debugLastSelection.start != null ? selectedCharWindow(debugLastSelection.start, debugLastSelection.end) : [],
+      routePlan: routePlanForSelection(debugLastSelection),
+      playbackTrace: playbackTraceForToken(debugLastSelection.token)
+    } : null,
+    events: debugEvents.slice(-DEBUG_MAX_EVENTS)
+  };
+}
+
+function renderDebugPanel() {
+  if (!debugPanel) return;
+  debugPanel.style.display = debugEnabled ? 'block' : 'none';
+  document.body.classList.toggle('debug-mode', debugEnabled);
+  if (debugBadge) debugBadge.textContent = debugEnabled ? `开启 · ${debugEvents.length}条` : '未开启';
+  if (!debugEnabled) {
+    applyDebugTimingClasses();
+    return;
+  }
+
+  if (debugSelectionEl) {
+    if (!debugLastSelection) debugSelectionEl.textContent = '暂无';
+    else {
+      const info = debugLastSelection.start != null ? timingInfoForRange(debugLastSelection.start, debugLastSelection.end) : null;
+      const trace = playbackTraceForToken(debugLastSelection.token);
+      const traceLine = trace && trace.routeResults.length
+        ? `\n路线 ${trace.routeResults.map(r => `${r.route}:${r.ok ? 'ok' : 'no'}`).join(' -> ')}`
+        : '';
+      const rejectLine = trace && trace.rejects.length
+        ? `\n拒绝 ${trace.rejects.slice(0, 3).map(r => `${r.route || r.type}:${r.reason}`).join(' | ')}`
+        : '';
+      debugSelectionEl.textContent = `${debugLastSelection.kind || ''} #${debugLastSelection.si ?? '-'}:${debugLastSelection.wi ?? '-'} "${compactPreview(debugLastSelection.text, 38)}"${info ? '\n' + timingLine(info) : ''}${traceLine}${rejectLine}`;
+    }
+  }
+
+  if (debugSummaryEl) {
+    const s = songDebugSummary();
+    const d = analyzeAlignment();
+    const risk = d.ready ? `\n风险 missing:${d.riskCounts.missing} weak:${d.riskCounts.weak} short:${d.riskCounts.short} group:${d.riskCounts.groupBoundary} lenΔ:${d.riskCounts.textLengthDelta} tightTail:${d.riskCounts.tightSentenceTail}` : '';
+    debugSummaryEl.textContent = s.exists
+      ? `音频 ${s.audioMs}ms / ${s.audioKB}KB / ${s.format}\n覆盖 ${s.covered}/${s.spokenTextLength} (${s.coveragePct}%), 时间轴${s.timelineLength}, 输入${s.inputLength}\n来源 ${JSON.stringify(s.sources)}\n句子 ${s.sentenceRanges.length} 个, 批次 ${s.chunkReports.length} 个${risk}`
+      : `暂无预处理数据\n在线TTS=${onlineTtsEnabled ? '开' : '关'}, 缓存=${cacheAvailable ? '可用' : '不可用'}`;
+  }
+
+  if (debugLogView) {
+    const recent = debugEvents.slice(-45).reverse().map(ev => {
+      const copy = { ...ev };
+      delete copy.at;
+      return `${ev.at.slice(11, 19)} ${JSON.stringify(copy)}`;
+    });
+    debugLogView.textContent = recent.length ? recent.join('\n') : '等待播放事件...';
+  }
+  applyDebugTimingClasses();
+}
+
+function openDebugPanelForIssue(reason) {
+  if (!debugEnabled) {
+    debugEnabled = true;
+    localStorage.setItem('ttsDebugPanel', '1');
+  }
+  debugLog('debug:auto-open', { reason });
+  renderDebugPanel();
+}
+
+function applyDebugTimingClasses() {
+  const enabled = !!debugEnabled;
+  segContainer.querySelectorAll('.segment').forEach(el => {
+    el.classList.remove('dbg-direct', 'dbg-est', 'dbg-missing', 'dbg-unknown');
+    const baseTitle = el.dataset.baseTitle || '';
+    if (!enabled) {
+      el.title = baseTitle;
+      return;
+    }
+  });
+  if (!enabled) return;
+  const groups = segContainer.querySelectorAll('.sgroup');
+  currentSentences.forEach((s, si) => {
+    const tiles = groups[si]?.querySelectorAll('.segment');
+    if (!tiles) return;
+    s.words.forEach((w, wi) => {
+      const el = tiles[wi];
+      if (!el || w.type === 'punct' || w.type === 'space') return;
+      const cls = timingClassForRange(w.start, w.end);
+      const info = timingInfoForRange(w.start, w.end);
+      el.classList.add(cls);
+      const baseTitle = el.dataset.baseTitle || el.getAttribute('title') || w.text;
+      el.dataset.baseTitle = baseTitle;
+      el.title = `${baseTitle}\n${timingLine(info)}`;
+    });
+  });
+}
+
+async function copyDebugReport() {
+  const text = JSON.stringify(buildDebugReport(), null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('调试报告已复制');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    showToast('调试报告已复制');
+  }
+}
+
+function downloadDebugReport() {
+  const text = JSON.stringify(buildDebugReport(), null, 2);
+  const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `yue-debug-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+debugPanelBtn.addEventListener('click', () => {
+  debugEnabled = !debugEnabled;
+  localStorage.setItem('ttsDebugPanel', debugEnabled ? '1' : '0');
+  debugLog(debugEnabled ? 'debug:on' : 'debug:off');
+  renderDebugPanel();
+});
+copyDebugBtn.addEventListener('click', copyDebugReport);
+downloadDebugBtn.addEventListener('click', downloadDebugReport);
+clearDebugBtn.addEventListener('click', () => { debugEvents = []; debugLastSelection = null; renderDebugPanel(); showToast('调试日志已清空'); });
+renderDebugPanel();
 
 function showToast(msg) {
   toast.textContent = msg;
@@ -1397,7 +2422,9 @@ inputEl.addEventListener('input', () => {
     renderSentences(inputEl.value);
     // 文本变化后清除旧 songData，防止旧 charTime 与新文本位置不匹配
     if (songData && songData.text !== inputEl.value.trim()) {
+      debugLog('songData:cleared-by-input-change', { previousLength: charLen(songData.text || ''), nextLength: charLen(inputEl.value.trim()) });
       songData = null;
+      renderDebugPanel();
     }
   }, 200);
   saveHistory(inputEl.value);
@@ -1473,6 +2500,7 @@ function renderSentences(text) {
         el.innerHTML = `<span class="ch">${w.text}</span>${jp ? `<span class="jp">${jp}</span>` : ''}`;
       }
       else { el.textContent = w.text; }
+      el.dataset.baseTitle = el.getAttribute('title') || w.text;
       if (w.type !== 'punct' && w.type !== 'space') {
         el.dataset.si = si; el.dataset.wi = wi;
         el.addEventListener('click', () => playWord(si, wi));
@@ -1483,6 +2511,7 @@ function renderSentences(text) {
     group.appendChild(tiles);
     segContainer.appendChild(group);
   }
+  applyDebugTimingClasses();
 }
 
 function clearHighlight() {
@@ -1497,17 +2526,40 @@ async function playSentence(si) {
   const s = currentSentences[si];
   if (!s) return;
   const token = nextPlaybackToken();
+  setDebugSelection({ kind: 'sentence', si, text: s.text, start: s.start, end: s.end, token });
   stopSpeak(); clearHighlight();
   const groups = segContainer.querySelectorAll('.sgroup');
   if (groups[si]) groups[si].classList.add('active');
   const hdrs = segContainer.querySelectorAll('.shdr');
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
+    if (!ensureSongDataCurrent('play-sentence')) return;
     const rate = parseFloat(speedRange.value);
-    const ok = await playSentenceRange(si, rate, token) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520, token });
+    const sentenceOk = await playSentenceRange(si, rate, token);
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'sentence', si, route: 'sentence-range', ok: sentenceOk, token });
+    let ok = sentenceOk;
+    if (!ok) {
+      ok = await playCharRange(s.start, s.end, rate, {
+        prePadMs: 50,
+        postPadMs: 220,
+        minMs: 520,
+        holdMs: 260,
+        snapToLowEnergy: true,
+        token,
+        debug: { route: 'sentence-char-range', kind: 'sentence', si, text: s.text }
+      });
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'sentence', si, route: 'sentence-char-range', ok, token });
+    }
     if (ok) return;
+    debugLog('play:reliable-audio-missing', { kind: 'sentence', si, text: s.text, token, reason: 'preprocessed-routes-failed' });
+    openDebugPanelForIssue('sentence-preprocessed-routes-failed');
+    statusBar.textContent = `⚠ 第 ${si + 1} 句未找到可靠预处理音频，请复制调试报告`;
+    return;
   }
   if (!isPlaybackCurrent(token)) return;
+  debugLog('play:fallback', { kind: 'sentence', si, route: 'system-speak', text: s.text, token });
   await speak(s.text, parseFloat(speedRange.value));
 }
 
@@ -1520,29 +2572,89 @@ async function playWord(si, wi) {
   const w = s.words[wi];
   if (w.type === 'punct' || w.type === 'space') return;
   const token = nextPlaybackToken();
+  setDebugSelection({ kind: 'word', si, wi, text: w.text, start: w.start, end: w.end, type: w.type, token });
   stopSpeak(); clearHighlight();
   const groups = segContainer.querySelectorAll('.sgroup');
   if (groups[si]) groups[si].classList.add('active');
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (songData) {
+    if (!ensureSongDataCurrent('play-word')) return;
     const rate = parseFloat(speedRange.value);
-    if (charLen(w.text) === 1) {
-      const ctxOk = await playContextSegmentClip(contextUnitForWord(si, wi), rate, token);
-      if (ctxOk) return;
+    const wLen = charLen(w.text);
+    const defaultContextUnit = contextUnitForWord(si, wi);
+    const ctxOk = await playContextSegmentClip(defaultContextUnit, rate, token);
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'context-clip', ok: ctxOk, token });
+    if (ctxOk) return;
+    const wideContextUnit = contextUnitForWord(si, wi, 6);
+    const shouldTryWideContext = wideContextUnit && (!defaultContextUnit || contextClipCacheKey(wideContextUnit) !== contextClipCacheKey(defaultContextUnit));
+    if (shouldTryWideContext) {
+      const wideCtxOk = await playContextSegmentClip(wideContextUnit, rate, token);
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'context-clip-wide', ok: wideCtxOk, token });
+      if (wideCtxOk) return;
     }
-    const clipOk = await playSegmentClip(w.text, rate, token);
-    if (clipOk) return;
-    const ok = await playCharRange(w.start, w.end, rate, {
-      guardNeighbors: true,
-      neighborBorrowMs: charLen(w.text) <= 1 ? 42 : 34,
-      prePadMs: charLen(w.text) <= 1 ? 42 : 34,
-      postPadMs: charLen(w.text) <= 1 ? 58 : 48,
-      minMs: charLen(w.text) <= 1 ? 240 : 210,
-      token
-    });
-    if (ok) return;
+    const teachingUnit = teachingRepeatUnitForWord(si, wi);
+    const teachingOk = await playTeachingRepeatClip(teachingUnit, rate, token);
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'teaching-repeat-clip', ok: teachingOk, token });
+    if (teachingOk) return;
+    if (wLen === 1 && isContextRangeReliable(songData, w.start, w.end)) {
+      const directOk = await playCharRange(w.start, w.end, rate, {
+        guardNeighbors: true,
+        neighborBorrowMs: 42,
+        prePadMs: 42,
+        postPadMs: 58,
+        minMs: 240,
+        snapToLowEnergy: true,
+        token,
+        debug: { route: 'song-direct-char-range', kind: 'word', si, wi, text: w.text }
+      });
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'song-direct-char-range', ok: directOk, token });
+      if (directOk) return;
+    }
+    if (wLen > 1) {
+      const clipOk = await playSegmentClip(w.text, rate, token);
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'exact-clip', ok: clipOk, token });
+      if (clipOk) return;
+    }
+    let ok = false;
+    const songRangeReliability = contextRangeReliability(songData, w.start, w.end);
+    if (songRangeReliability.ok) {
+      ok = await playCharRange(w.start, w.end, rate, {
+        guardNeighbors: true,
+        neighborBorrowMs: wLen <= 1 ? 42 : 34,
+        prePadMs: wLen <= 1 ? 42 : 34,
+        postPadMs: wLen <= 1 ? 58 : 48,
+        minMs: wLen <= 1 ? 240 : 210,
+        rejectBelowMs: wLen <= 1 ? 170 : 120,
+        snapToLowEnergy: true,
+        token,
+        debug: { route: 'song-char-range', kind: 'word', si, wi, text: w.text }
+      });
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'song-char-range', ok, token });
+      if (ok) return;
+    } else {
+      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'song-char-range', reason: songRangeReliability.reason || 'low-confidence-song-range', reliability: songRangeReliability, token });
+    }
+    if (wLen === 1 && isolatedCharFallbackEnabled) {
+      const clipOk = await playSegmentClip(w.text, rate, token);
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'exact-clip-last-resort', ok: clipOk, token });
+      if (clipOk) return;
+    } else if (wLen === 1) {
+      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'exact-clip-last-resort', reason: 'isolated-char-fallback-disabled', token });
+    }
+    debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'preprocessed-routes-failed' });
+    openDebugPanelForIssue('word-preprocessed-routes-failed');
+    statusBar.textContent = `⚠ "${w.text}" 未找到可靠预处理音频，请复制调试报告`;
+    return;
   }
+  debugLog('play:fallback', { kind: 'word', si, wi, text: w.text, route: 'speak-one-cached', token });
   await speakOneCached(w.text, parseFloat(speedRange.value), token);
 }
 
@@ -1576,21 +2688,45 @@ speakAllBtn.addEventListener('click', async () => {
   const text = inputEl.value.trim();
   if (!text) { showToast('没有可朗读的内容'); return; }
   const token = nextPlaybackToken();
+  setDebugSelection({ kind: 'all', text: compactPreview(text), start: 0, end: charLen(text), token });
   stopSpeak(); clearHighlight();
   const rate = parseFloat(speedRange.value);
   // 如果有 songData，逐句用 charTime 播放
   if (songData && songData.charTime) {
+    if (!ensureSongDataCurrent('play-all')) return;
     const groups = segContainer.querySelectorAll('.sgroup');
     for (let si = 0; si < currentSentences.length; si++) {
       if (!isPlaybackCurrent(token)) return;
       const s = currentSentences[si];
+      debugLog('play:all-sentence', { si, text: s.text, start: s.start, end: s.end, token });
       if (groups[si]) groups[si].classList.add('active');
       const hdrs = segContainer.querySelectorAll('.shdr');
       if (hdrs[si]) hdrs[si].classList.add('playing');
-      const ok = await playSentenceRange(si, rate, token) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520, token });
-      if (!ok && isPlaybackCurrent(token)) await speak(s.text, rate);
+      const sentenceOk = await playSentenceRange(si, rate, token);
       if (!isPlaybackCurrent(token)) return;
-      await new Promise(r => setTimeout(r, 40));
+      let ok = sentenceOk;
+      debugLog('play:route-result', { kind: 'all', si, route: 'sentence-range', ok, token });
+      if (!ok) {
+        ok = await playCharRange(s.start, s.end, rate, {
+          prePadMs: 50,
+          postPadMs: 220,
+          minMs: 520,
+          holdMs: 260,
+          snapToLowEnergy: true,
+          token,
+          debug: { route: 'all-sentence-char-range', kind: 'all', si, text: s.text }
+        });
+        if (!isPlaybackCurrent(token)) return;
+        debugLog('play:route-result', { kind: 'all', si, route: 'all-sentence-char-range', ok, token });
+      }
+      if (!ok && isPlaybackCurrent(token)) {
+        debugLog('play:reliable-audio-missing', { kind: 'all', si, text: s.text, token, reason: 'preprocessed-routes-failed' });
+        openDebugPanelForIssue('all-preprocessed-routes-failed');
+        statusBar.textContent = `⚠ 第 ${si + 1} 句未找到可靠预处理音频，请复制调试报告`;
+        return;
+      }
+      if (!isPlaybackCurrent(token)) return;
+      await new Promise(r => setTimeout(r, 90));
       if (!isPlaybackCurrent(token)) return;
       clearHighlight();
     }
@@ -1603,7 +2739,7 @@ speakAllBtn.addEventListener('click', async () => {
   statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
 });
 
-stopBtn.addEventListener('click', () => { nextPlaybackToken(); stopSpeak(); });
+stopBtn.addEventListener('click', () => { const token = nextPlaybackToken(); debugLog('play:stop', { token }); stopSpeak(); });
 
 speedRange.addEventListener('input', () => {
   speedLabel.textContent = parseFloat(speedRange.value).toFixed(1) + '×';
@@ -1614,9 +2750,11 @@ clearBtn.addEventListener('click', () => {
   charCount.textContent = '0';
   segContainer.innerHTML = '<div class="placeholder-text">👆 在上方输入文本，点击「转白话」或直接开始学习</div>';
   currentSentences = [];
-  nextPlaybackToken();
+  const token = nextPlaybackToken();
+  debugLog('app:clear', { token });
   stopSpeak();
   statusBar.textContent = '';
+  renderDebugPanel();
 });
 
 function addHistory(orig, translated) {
