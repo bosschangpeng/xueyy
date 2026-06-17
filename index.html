@@ -306,9 +306,19 @@ function segmentGreedy(text, reverse) {
 let currentUtterance = null;
 let currentAudioCtx = null;
 let currentAudioSrc = null;
+let playbackToken = 0;
 let proxyAvailable = null;
 let proxyRetryAt = 0;
 let speakCooldown = false;
+
+function nextPlaybackToken() {
+  playbackToken++;
+  return playbackToken;
+}
+
+function isPlaybackCurrent(token) {
+  return token == null || token === playbackToken;
+}
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
@@ -351,6 +361,7 @@ function contextClipCacheKey(unit) {
 }
 
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
+  if (!isPlaybackCurrent(opts.token)) return false;
   const bytesPerMs = bytesPerMsFor(sr, ch, bits);
   const blockAlign = blockAlignFor(ch, bits);
   const prePad = opts.prePadMs ?? opts.padMs ?? 30;
@@ -361,7 +372,7 @@ async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {})
   if (eb <= sb || sb >= pcm.length) return false;
   const slice = pcm.slice(sb, Math.min(eb, pcm.length));
   if (slice.length < 100) return false;
-  return playAudioBlob({ p: slice, sr, ch, bits }, rate);
+  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token);
 }
 
 async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
@@ -422,12 +433,13 @@ async function playCharRange(startChar, endChar, rate, opts = {}) {
   return playPcmCharRange(songData, startChar, endChar, rate, opts);
 }
 
-async function playSentenceRange(si, rate) {
+async function playSentenceRange(si, rate, token) {
   if (!songData?.sentenceRanges?.[si]) return false;
+  if (!isPlaybackCurrent(token)) return false;
   const { pcm, sr, ch, bits, sentenceRanges } = songData;
   const r = sentenceRanges[si];
   if (!r || r.endMs <= r.startMs) return false;
-  return playSongSlice(pcm, sr, ch, bits, r.startMs, r.endMs, rate, { prePadMs: 0, postPadMs: 0 });
+  return playSongSlice(pcm, sr, ch, bits, r.startMs, r.endMs, rate, { prePadMs: 0, postPadMs: 0, token });
 }
 
 const SPEECH_PROXY = '/tts';
@@ -812,11 +824,13 @@ async function fetchPreprocessClip(text) {
   return parsePreprocessAudio(pd);
 }
 
-async function playAudioBlob(data, rate) {
+async function playAudioBlob(data, rate, token) {
   if (!data) return false;
+  if (!isPlaybackCurrent(token)) return false;
   try {
     const ctx = getAudioCtx();
     if (ctx.state === 'suspended') await ctx.resume();
+    if (!isPlaybackCurrent(token)) return false;
     let audioBuf;
     // 新 PCM 格式
     if (data.p) {
@@ -835,6 +849,7 @@ async function playAudioBlob(data, rate) {
       // 旧 Blob 格式（WAV）
       audioBuf = await ctx.decodeAudioData(await data.arrayBuffer());
     } else return false;
+    if (!isPlaybackCurrent(token)) return false;
     const src = ctx.createBufferSource();
     src.buffer = audioBuf;
     src.playbackRate.value = rate;
@@ -845,7 +860,7 @@ async function playAudioBlob(data, rate) {
     if (currentAudioSrc) try { currentAudioSrc.stop(); } catch {}
     currentAudioSrc = src;
     return new Promise(resolve => {
-      src.onended = () => { currentAudioSrc = null; resolve(true); };
+      src.onended = () => { if (currentAudioSrc === src) currentAudioSrc = null; resolve(true); };
       src.start();
     });
   } catch (e) {
@@ -854,10 +869,12 @@ async function playAudioBlob(data, rate) {
   }
 }
 
-async function speakOneCached(text, rate) {
+async function speakOneCached(text, rate, token) {
+  if (!isPlaybackCurrent(token)) return false;
   if (!onlineTtsEnabled) {
     const voice = await resolveVoice();
     if (!voice) return false;
+    if (!isPlaybackCurrent(token)) return false;
     return speakOne(text, rate, 1, voice, 0, 1);
   }
   const cacheKey = clipCacheKey(text);
@@ -865,7 +882,7 @@ async function speakOneCached(text, rate) {
     const cached = await ttsCache.get(cacheKey);
     if (cached) {
       statusBar.textContent = `🔊: "${text}" (缓存)`;
-      const ok = await playAudioBlob(cached, rate);
+      const ok = await playAudioBlob(cached, rate, token);
       if (ok) return true;
       statusBar.textContent = `⚠ 缓存异常，重试在线...`;
     }
@@ -873,19 +890,22 @@ async function speakOneCached(text, rate) {
   try {
     const blob = await fetchTtsFromMiniMax(text);
     if (cacheAvailable) await ttsCache.set(cacheKey, blob);
+    if (!isPlaybackCurrent(token)) return false;
     statusBar.textContent = `🔊: "${text}" (在线)`;
-    await playAudioBlob(blob, rate);
+    await playAudioBlob(blob, rate, token);
     return true;
   } catch (e) {
     statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
     const voice = await resolveVoice();
     if (!voice) return false;
+    if (!isPlaybackCurrent(token)) return false;
     return speakOne(text, rate, 1, voice, 0, 1);
   }
 }
 
-async function playSegmentClip(text, rate) {
+async function playSegmentClip(text, rate, token) {
   if (!onlineTtsEnabled || !text) return false;
+  if (!isPlaybackCurrent(token)) return false;
   const cacheKey = clipCacheKey(text);
   try {
     let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
@@ -893,8 +913,9 @@ async function playSegmentClip(text, rate) {
       blob = await fetchTtsFromMiniMax(text);
       if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     }
+    if (!isPlaybackCurrent(token)) return false;
     statusBar.textContent = `🔊: "${text}" (精确clip)`;
-    return await playAudioBlob(blob, rate);
+    return await playAudioBlob(blob, rate, token);
   } catch (e) {
     console.warn('[segment clip] failed', text, e.message);
     return false;
@@ -978,8 +999,9 @@ async function preloadContextClips(units, onProgress) {
   return { ok, fail, total: units.length };
 }
 
-async function playContextSegmentClip(unit, rate) {
+async function playContextSegmentClip(unit, rate, token) {
   if (!unit || !onlineTtsEnabled) return false;
+  if (!isPlaybackCurrent(token)) return false;
   const key = contextClipCacheKey(unit);
   try {
     let clip = cacheAvailable ? await ttsCache.get(key) : null;
@@ -988,6 +1010,7 @@ async function playContextSegmentClip(unit, rate) {
       clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
       if (cacheAvailable) await ttsCache.set(key, clip);
     }
+    if (!isPlaybackCurrent(token)) return false;
     if (!isCharRangeDirectTimed(clip, clip.targetStart, clip.targetEnd)) {
       console.warn('[context segment clip] low confidence', unit.text, unit.contextText, clip.charSource?.slice(clip.targetStart, clip.targetEnd));
       return false;
@@ -997,7 +1020,8 @@ async function playContextSegmentClip(unit, rate) {
       neighborBorrowMs: 36,
       prePadMs: 36,
       postPadMs: 48,
-      minMs: 230
+      minMs: 230,
+      token
     });
     if (ok) statusBar.textContent = `🔊: "${unit.text}" (上下文clip)`;
     return ok;
@@ -1472,6 +1496,7 @@ async function playSentence(si) {
   setTimeout(() => { speakCooldown = false; }, 80);
   const s = currentSentences[si];
   if (!s) return;
+  const token = nextPlaybackToken();
   stopSpeak(); clearHighlight();
   const groups = segContainer.querySelectorAll('.sgroup');
   if (groups[si]) groups[si].classList.add('active');
@@ -1479,9 +1504,10 @@ async function playSentence(si) {
   if (hdrs[si]) hdrs[si].classList.add('playing');
   if (songData) {
     const rate = parseFloat(speedRange.value);
-    const ok = await playSentenceRange(si, rate) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520 });
+    const ok = await playSentenceRange(si, rate, token) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520, token });
     if (ok) return;
   }
+  if (!isPlaybackCurrent(token)) return;
   await speak(s.text, parseFloat(speedRange.value));
 }
 
@@ -1493,6 +1519,7 @@ async function playWord(si, wi) {
   if (!s || !s.words[wi]) return;
   const w = s.words[wi];
   if (w.type === 'punct' || w.type === 'space') return;
+  const token = nextPlaybackToken();
   stopSpeak(); clearHighlight();
   const groups = segContainer.querySelectorAll('.sgroup');
   if (groups[si]) groups[si].classList.add('active');
@@ -1501,21 +1528,22 @@ async function playWord(si, wi) {
   if (songData) {
     const rate = parseFloat(speedRange.value);
     if (charLen(w.text) === 1) {
-      const ctxOk = await playContextSegmentClip(contextUnitForWord(si, wi), rate);
+      const ctxOk = await playContextSegmentClip(contextUnitForWord(si, wi), rate, token);
       if (ctxOk) return;
     }
-    const clipOk = await playSegmentClip(w.text, rate);
+    const clipOk = await playSegmentClip(w.text, rate, token);
     if (clipOk) return;
     const ok = await playCharRange(w.start, w.end, rate, {
       guardNeighbors: true,
       neighborBorrowMs: charLen(w.text) <= 1 ? 42 : 34,
       prePadMs: charLen(w.text) <= 1 ? 42 : 34,
       postPadMs: charLen(w.text) <= 1 ? 58 : 48,
-      minMs: charLen(w.text) <= 1 ? 240 : 210
+      minMs: charLen(w.text) <= 1 ? 240 : 210,
+      token
     });
     if (ok) return;
   }
-  await speakOneCached(w.text, parseFloat(speedRange.value));
+  await speakOneCached(w.text, parseFloat(speedRange.value), token);
 }
 
 let savedOriginal = '';
@@ -1547,29 +1575,35 @@ speakAllBtn.addEventListener('click', async () => {
   setTimeout(() => { speakCooldown = false; }, 80);
   const text = inputEl.value.trim();
   if (!text) { showToast('没有可朗读的内容'); return; }
+  const token = nextPlaybackToken();
   stopSpeak(); clearHighlight();
   const rate = parseFloat(speedRange.value);
   // 如果有 songData，逐句用 charTime 播放
   if (songData && songData.charTime) {
     const groups = segContainer.querySelectorAll('.sgroup');
     for (let si = 0; si < currentSentences.length; si++) {
+      if (!isPlaybackCurrent(token)) return;
       const s = currentSentences[si];
       if (groups[si]) groups[si].classList.add('active');
       const hdrs = segContainer.querySelectorAll('.shdr');
       if (hdrs[si]) hdrs[si].classList.add('playing');
-      const ok = await playSentenceRange(si, rate) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520 });
-      if (!ok) await speak(s.text, rate);
+      const ok = await playSentenceRange(si, rate, token) || await playCharRange(s.start, s.end, rate, { prePadMs: 50, postPadMs: 220, minMs: 520, token });
+      if (!ok && isPlaybackCurrent(token)) await speak(s.text, rate);
+      if (!isPlaybackCurrent(token)) return;
       await new Promise(r => setTimeout(r, 40));
+      if (!isPlaybackCurrent(token)) return;
       clearHighlight();
     }
+    if (!isPlaybackCurrent(token)) return;
     statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
     return;
   }
+  if (!isPlaybackCurrent(token)) return;
   await speak(text, rate);
   statusBar.textContent = `🔊 朗读全文 (语速 ${rate.toFixed(1)}×)`;
 });
 
-stopBtn.addEventListener('click', stopSpeak);
+stopBtn.addEventListener('click', () => { nextPlaybackToken(); stopSpeak(); });
 
 speedRange.addEventListener('input', () => {
   speedLabel.textContent = parseFloat(speedRange.value).toFixed(1) + '×';
@@ -1580,6 +1614,7 @@ clearBtn.addEventListener('click', () => {
   charCount.textContent = '0';
   segContainer.innerHTML = '<div class="placeholder-text">👆 在上方输入文本，点击「转白话」或直接开始学习</div>';
   currentSentences = [];
+  nextPlaybackToken();
   stopSpeak();
   statusBar.textContent = '';
 });
