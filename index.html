@@ -312,7 +312,7 @@ let speakCooldown = false;
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v7';
+const ALIGN_SCHEMA_VERSION = 'ct_v8';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -939,12 +939,12 @@ function buildContextClipUnits() {
   return units;
 }
 
-function isCharRangeWordTimed(clip, start, end) {
+function isCharRangeDirectTimed(clip, start, end) {
   if (!clip?.charTime || !clip?.charSource) return false;
   if (start < 0 || end > clip.charTime.length || end <= start) return false;
   for (let i = start; i < end; i++) {
     if (!clip.charTime[i]) return false;
-    if (clip.charSource[i] !== 'word' && clip.charSource[i] !== 'word_est') return false;
+    if (clip.charSource[i] !== 'char') return false;
   }
   return true;
 }
@@ -953,10 +953,10 @@ async function ensureContextClipCached(unit) {
   if (!unit || !cacheAvailable) return false;
   const key = contextClipCacheKey(unit);
   const cached = await ttsCache.get(key);
-  if (cached) return isCharRangeWordTimed(cached, cached.targetStart, cached.targetEnd);
+  if (cached) return isCharRangeDirectTimed(cached, cached.targetStart, cached.targetEnd);
   const clip = await fetchPreprocessClip(unit.contextText);
   const stored = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
-  if (!isCharRangeWordTimed(stored, stored.targetStart, stored.targetEnd)) return false;
+  if (!isCharRangeDirectTimed(stored, stored.targetStart, stored.targetEnd)) return false;
   await ttsCache.set(key, stored);
   return true;
 }
@@ -988,7 +988,7 @@ async function playContextSegmentClip(unit, rate) {
       clip = { ...clip, targetStart: unit.targetStart, targetEnd: unit.targetEnd, text: unit.text, contextText: unit.contextText };
       if (cacheAvailable) await ttsCache.set(key, clip);
     }
-    if (!isCharRangeWordTimed(clip, clip.targetStart, clip.targetEnd)) {
+    if (!isCharRangeDirectTimed(clip, clip.targetStart, clip.targetEnd)) {
       console.warn('[context segment clip] low confidence', unit.text, unit.contextText, clip.charSource?.slice(clip.targetStart, clip.targetEnd));
       return false;
     }

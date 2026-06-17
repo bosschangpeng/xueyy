@@ -437,7 +437,10 @@ async function buildCharTime(subtitle, text, audioDurationMs) {
         tb = item.time_begin + ((range.start - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
         te = item.time_begin + ((range.end - itemRange.start) / itemSpan) * (item.time_end - item.time_begin);
       }
-      const sourceLabel = (w.time_begin != null && w.time_end != null && w.time_end > w.time_begin) ? 'word' : 'word_est';
+      const hasDirectWordTime = w.time_begin != null && w.time_end != null && w.time_end > w.time_begin;
+      const sourceLabel = hasDirectWordTime
+        ? (range.end - range.start === 1 ? 'char' : 'word')
+        : 'word_est';
       if (applyTimedRange(charTime, sources, range, tb, te, sourceLabel)) {
         addedWords++;
         cursor = Math.max(cursor, range.end);
