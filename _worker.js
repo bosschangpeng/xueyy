@@ -7,6 +7,43 @@
 
 const AUTH_COOKIE = 'yue_token';
 const COOKIE_DAYS = 3650;
+const MINIMAX_RPM_LIMIT = 20;
+const MINIMAX_REQUEST_INTERVAL_MS = Math.ceil(60000 / MINIMAX_RPM_LIMIT) + 250;
+const MINIMAX_RATE_LIMIT_RETRY_MS = 65000;
+let minimaxNextRequestAt = 0;
+let minimaxQueue = Promise.resolve();
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForMiniMaxSlot(label = 'minimax') {
+  const previous = minimaxQueue.catch(() => {});
+  let release;
+  minimaxQueue = new Promise(resolve => { release = resolve; });
+  await previous;
+  try {
+    const waitMs = Math.max(0, minimaxNextRequestAt - Date.now());
+    if (waitMs > 0) await sleep(waitMs);
+    minimaxNextRequestAt = Date.now() + MINIMAX_REQUEST_INTERVAL_MS;
+  } finally {
+    release();
+  }
+}
+
+function miniMaxError(message, status = 500, retryAfter = '') {
+  const err = new Error(message);
+  err.status = status;
+  if (retryAfter) err.retryAfter = retryAfter;
+  return err;
+}
+
+function miniMaxJsonError(e) {
+  const status = Number(e.status) || 500;
+  const headers = {'Content-Type':'application/json'};
+  if (status === 429) headers['Retry-After'] = e.retryAfter || String(Math.ceil(MINIMAX_RATE_LIMIT_RETRY_MS / 1000));
+  return new Response(JSON.stringify({error:e.message}), {status, headers});
+}
 
 const PAGE = (msg) => `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -62,6 +99,7 @@ async function minimaxTts(env, body, opts = {}) {
   if (!apiKey || !groupId) {
     throw new Error('MiniMax not configured');
   }
+  await waitForMiniMaxSlot('minimaxTts');
   const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
     method: 'POST',
     headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
@@ -76,9 +114,25 @@ async function minimaxTts(env, body, opts = {}) {
       subtitle_type: opts.subtitle_type,
     }),
   });
-  if (!resp.ok) throw new Error('MiniMax API '+resp.status);
+  if (!resp.ok) {
+    let msg = 'MiniMax API ' + resp.status;
+    try {
+      const errData = await resp.clone().json();
+      msg = errData.base_resp?.status_msg || errData.error || errData.message || msg;
+    } catch {
+      try {
+        const txt = await resp.text();
+        if (txt) msg = msg + ': ' + txt.slice(0, 160);
+      } catch {}
+    }
+    throw miniMaxError(msg, resp.status, resp.headers.get('Retry-After') || '');
+  }
   const data = await resp.json();
-  if (data.base_resp?.status_code !== 0) throw new Error(data.base_resp?.status_msg||'TTS error');
+  if (data.base_resp?.status_code !== 0) {
+    const msg = data.base_resp?.status_msg || 'TTS error';
+    const status = /(^|\D)429(\D|$)|rate limit|too many requests|rpm/i.test(msg) ? 429 : 500;
+    throw miniMaxError(msg, status);
+  }
   return data;
 }
 
@@ -580,6 +634,7 @@ export default {
           audio_setting: {sample_rate:32000, bitrate:128000, format:'wav', channel:1},
           subtitle_enable: true, subtitle_type: 'word',
         });
+        await waitForMiniMaxSlot('debug-tts');
         const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
           method: 'POST', headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'}, body,
         });
@@ -609,7 +664,7 @@ export default {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {
-        return new Response(JSON.stringify({error:e.message}), {status:500,headers:{'Content-Type':'application/json'}});
+        return miniMaxJsonError(e);
       }
     }
 
@@ -630,7 +685,7 @@ export default {
             headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':String(audioBytes.length)},
           });
         } catch (e) {
-          return new Response(JSON.stringify({error:e.message}), {status:500,headers:{'Content-Type':'application/json'}});
+          return miniMaxJsonError(e);
         }
       }
       return new Response('Method not allowed', { status: 405 });

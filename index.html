@@ -1033,12 +1033,84 @@ class TtsCache {
 }
 const ttsCache = new TtsCache();
 
+const MINIMAX_RPM_LIMIT = 20;
+const MINIMAX_REQUEST_INTERVAL_MS = Math.ceil(60000 / MINIMAX_RPM_LIMIT) + 250;
+const MINIMAX_RATE_LIMIT_RETRY_MS = 65000;
+const MINIMAX_RATE_LIMIT_RETRIES = 3;
+let minimaxNextRequestAt = 0;
+let minimaxQueue = Promise.resolve();
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(resp) {
+  const raw = resp.headers.get('Retry-After');
+  if (raw) {
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
+    const dateMs = Date.parse(raw);
+    if (Number.isFinite(dateMs)) return Math.max(1000, dateMs - Date.now());
+  }
+  return MINIMAX_RATE_LIMIT_RETRY_MS;
+}
+
+async function waitForMiniMaxSlot(label = 'minimax') {
+  const previous = minimaxQueue.catch(() => {});
+  let release;
+  minimaxQueue = new Promise(resolve => { release = resolve; });
+  await previous;
+  try {
+    const waitMs = Math.max(0, minimaxNextRequestAt - Date.now());
+    if (waitMs > 0) {
+      debugLog('minimax:throttle-wait', { label, waitMs, rpm: MINIMAX_RPM_LIMIT });
+      statusBar.textContent = `⏳ MiniMax限速等待 ${Math.ceil(waitMs / 1000)}秒...`;
+      await sleep(waitMs);
+    }
+    minimaxNextRequestAt = Date.now() + MINIMAX_REQUEST_INTERVAL_MS;
+    debugLog('minimax:slot', { label, intervalMs: MINIMAX_REQUEST_INTERVAL_MS });
+  } finally {
+    release();
+  }
+}
+
+async function isMiniMaxRateLimitResponse(resp) {
+  if (resp.status === 429) return true;
+  if (resp.status !== 500) return false;
+  try {
+    const j = await resp.clone().json();
+    return /(^|\D)429(\D|$)|rate limit|too many requests|rpm/i.test(String(j.error || ''));
+  } catch {
+    return false;
+  }
+}
+
+async function fetchMiniMaxProxy(path, init, label = 'minimax') {
+  for (let attempt = 0; ; attempt++) {
+    await waitForMiniMaxSlot(label);
+    const startedAt = performance.now();
+    debugLog('minimax:request', { label, path, attempt });
+    const resp = await fetch(path, init);
+    debugLog('minimax:response', { label, path, attempt, ok: resp.ok, status: resp.status, durationMs: Math.round(performance.now() - startedAt) });
+
+    if (attempt < MINIMAX_RATE_LIMIT_RETRIES && await isMiniMaxRateLimitResponse(resp)) {
+      const waitMs = parseRetryAfterMs(resp);
+      minimaxNextRequestAt = Math.max(minimaxNextRequestAt, Date.now() + waitMs);
+      debugLog('minimax:rate-limit', { label, path, attempt, status: resp.status, retryAfterMs: waitMs });
+      statusBar.textContent = `⏳ MiniMax触发限速，${Math.ceil(waitMs / 1000)}秒后重试...`;
+      await sleep(waitMs);
+      continue;
+    }
+    return resp;
+  }
+}
+
 async function fetchTtsFromMiniMax(text) {
-  const resp = await fetch('/tts', {
+  const resp = await fetchMiniMaxProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice: minimaxVoice, speed: 0.85 }),
-  });
+  }, 'tts-clip');
   if (!resp.ok) {
     let msg = 'MiniMax TTS failed: ' + resp.status;
     try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
@@ -1070,11 +1142,11 @@ function parsePreprocessAudio(pd) {
 }
 
 async function fetchPreprocessClip(text) {
-  const resp = await fetch('/preprocess', {
+  const resp = await fetchMiniMaxProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice: minimaxVoice }),
-  });
+  }, 'preprocess-clip');
   if (!resp.ok) {
     let msg = '预处理clip失败: ' + resp.status;
     try { const j = await resp.json(); msg = j.error || msg; } catch {}
@@ -1647,11 +1719,11 @@ preprocessBtn.addEventListener('click', async () => {
       statusBar.textContent = `⚡ 预处理第 ${ci+1}/${chunks.length} 批 (${chunk.length}字)...`;
       preprocessFill.style.width = pct + '%';
 
-      const resp = await fetch('/preprocess', {
+      const resp = await fetchMiniMaxProxy('/preprocess', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: chunk, voice: minimaxVoice }),
-      });
+      }, `preprocess-main-${ci + 1}/${chunks.length}`);
       if (!resp.ok) {
         let msg = '预处理失败: ' + resp.status;
         try { const j = await resp.json(); msg = j.error || msg; } catch {}
@@ -1804,7 +1876,7 @@ document.getElementById('clearCacheBtn').addEventListener('click', async () => {
 document.getElementById('debugTtsBtn').addEventListener('click', async () => {
   showToast('测试中...');
   try {
-    const resp = await fetch('/debug-tts');
+    const resp = await fetchMiniMaxProxy('/debug-tts', { method: 'GET' }, 'debug-tts');
     const txt = await resp.text();
     debugLog('worker:debug-tts', { ok: resp.ok, text: txt.slice(0, 900) });
     showToast(txt);
