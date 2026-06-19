@@ -100,18 +100,21 @@ async function minimaxTts(env, body, opts = {}) {
     throw new Error('MiniMax not configured');
   }
   await waitForMiniMaxSlot('minimaxTts');
+  const audioFormat = opts.format || body.format || 'mp3';
   const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
     method: 'POST',
     headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
     body: JSON.stringify({
-      model: 'speech-2.8-hd',
+      model: body.model || opts.model || 'speech-2.8-hd',
       text: body.text,
       stream: false,
-      language_boost: 'Chinese,Yue',
+      language_boost: body.language_boost || opts.language_boost || 'Chinese,Yue',
       voice_setting: {voice_id: body.voice||'Cantonese_GentleLady', speed: body.speed||1.0, vol:1.0, pitch:0},
-      audio_setting: {sample_rate:32000, bitrate:128000, format: opts.format||'mp3', channel:1},
-      subtitle_enable: opts.subtitle_enable || false,
-      subtitle_type: opts.subtitle_type,
+      audio_setting: {sample_rate:32000, bitrate:128000, format: audioFormat, channel:1},
+      subtitle_enable: opts.subtitle_enable || body.subtitle_enable || false,
+      subtitle_type: opts.subtitle_type || body.subtitle_type,
+      output_format: body.output_format || opts.output_format || 'hex',
+      aigc_watermark: body.aigc_watermark ?? opts.aigc_watermark ?? false,
     }),
   });
   if (!resp.ok) {
@@ -678,11 +681,14 @@ export default {
           return new Response('Unauthorized', { status: 401 });
         }
         try {
-          const data = await minimaxTts(env, await request.json());
+          const body = await request.json();
+          const data = await minimaxTts(env, body);
           const audioHex = data.data?.audio || '';
           const audioBytes = hexToBytes(audioHex);
+          const audioFormat = data.extra_info?.audio_format || body.format || 'mp3';
+          const contentType = audioFormat === 'wav' ? 'audio/wav' : (audioFormat === 'flac' ? 'audio/flac' : 'audio/mpeg');
           return new Response(audioBytes, {
-            headers: {'Content-Type':'audio/mpeg','Cache-Control':'public,max-age=31536000,immutable','Content-Length':String(audioBytes.length)},
+            headers: {'Content-Type':contentType,'Cache-Control':'public,max-age=31536000,immutable','Content-Length':String(audioBytes.length),'X-Audio-Format':audioFormat},
           });
         } catch (e) {
           return miniMaxJsonError(e);

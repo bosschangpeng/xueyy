@@ -353,6 +353,12 @@ function isPlaybackCurrent(token) {
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
 const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_mvp_v1';
+const TEACHING_CHAR_SPEED = 0.78;
+const TEACHING_WORD_SPEED = 0.82;
+const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
+const TEACHING_ASSET_FORMAT = 'wav';
+const TEACHING_ASSET_PAUSE = '<#0.06#>';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -530,6 +536,20 @@ function contextClipCacheKey(unit) {
 
 function teachingClipCacheKey(unit) {
   return 'teach_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.teachingText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
+}
+
+function teachingAssetCacheKey(asset) {
+  return 'asset_' + hashText([
+    TEACHING_ASSET_SCHEMA_VERSION,
+    asset.type,
+    minimaxVoice,
+    asset.normalizedText,
+    asset.jyutping,
+    asset.model,
+    asset.speed,
+    asset.format,
+    asset.pauseStrategy
+  ].join('|'));
 }
 
 async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {}) {
@@ -1117,6 +1137,106 @@ async function fetchTtsFromMiniMax(text) {
     throw new Error(msg);
   }
   return await resp.blob();
+}
+
+function normalizeCantoneseTtsText(text) {
+  return s2tConvert(String(text || '').trim());
+}
+
+function jyutpingPartsForText(text) {
+  const normalizedText = normalizeCantoneseTtsText(text);
+  const chars = textChars(normalizedText);
+  const wordJp = jpWords[text] || jpWords[normalizedText] || '';
+  const syllables = String(wordJp || '').split(/\s+/).filter(Boolean);
+  if (syllables.length === chars.length) return syllables;
+  return chars.map(ch => jyutpingMap.get(ch) || '');
+}
+
+function jyutpingForTeachingText(text) {
+  return jyutpingPartsForText(text).filter(Boolean).join(' ');
+}
+
+function miniMaxTeachingText(text, type) {
+  const normalizedText = normalizeCantoneseTtsText(text);
+  const chars = textChars(normalizedText).filter(ch => !/\s/u.test(ch));
+  const parts = jyutpingPartsForText(normalizedText);
+  const rendered = chars.map((ch, i) => {
+    const jp = parts[i];
+    return jp && jp !== '?' ? `${ch}(${jp})` : ch;
+  });
+  return rendered.join(type === 'char' ? '' : TEACHING_ASSET_PAUSE);
+}
+
+function teachingAssetForWord(w) {
+  if (!w || !w.text) return null;
+  const type = charLen(w.text) <= 1 ? 'char' : 'word';
+  const normalizedText = normalizeCantoneseTtsText(w.text);
+  const jyutping = jyutpingForTeachingText(normalizedText);
+  return {
+    type,
+    text: w.text,
+    normalizedText,
+    jyutping,
+    ttsText: miniMaxTeachingText(w.text, type),
+    model: TEACHING_ASSET_MODEL,
+    speed: type === 'char' ? TEACHING_CHAR_SPEED : TEACHING_WORD_SPEED,
+    format: TEACHING_ASSET_FORMAT,
+    pauseStrategy: type === 'char' ? 'none' : 'jyutping_006'
+  };
+}
+
+async function fetchTeachingTtsFromMiniMax(asset) {
+  const resp = await fetchMiniMaxProxy('/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: asset.ttsText || asset.normalizedText,
+      voice: minimaxVoice,
+      speed: asset.speed,
+      model: asset.model,
+      format: asset.format,
+      output_format: 'hex',
+      aigc_watermark: false,
+    }),
+  }, `teaching-${asset.type}`);
+  if (!resp.ok) {
+    let msg = '教学音频生成失败: ' + resp.status;
+    try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  return await resp.blob();
+}
+
+async function ensureTeachingAssetCached(asset) {
+  if (!asset) return null;
+  const cacheKey = teachingAssetCacheKey(asset);
+  let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
+  if (blob) {
+    debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, cacheKey: cacheKey.slice(0, 18) });
+    return { blob, cacheKey, fromCache: true };
+  }
+  debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, ttsText: asset.ttsText, model: asset.model, speed: asset.speed });
+  blob = await fetchTeachingTtsFromMiniMax(asset);
+  if (cacheAvailable) await ttsCache.set(cacheKey, blob);
+  return { blob, cacheKey, fromCache: false };
+}
+
+async function playTeachingAssetForWord(w, rate, token) {
+  if (!onlineTtsEnabled || !w || !w.text) return false;
+  if (!isPlaybackCurrent(token)) return false;
+  const asset = teachingAssetForWord(w);
+  if (!asset) return false;
+  try {
+    const result = await ensureTeachingAssetCached(asset);
+    if (!result?.blob || !isPlaybackCurrent(token)) return false;
+    const route = asset.type === 'char' ? 'char-audio' : 'word-audio';
+    debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
+    statusBar.textContent = `🔊: "${asset.text}" (${asset.type === 'char' ? '单字教学' : '词组教学'})`;
+    return await playAudioBlob(result.blob, rate, token, { route, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping });
+  } catch (e) {
+    debugLog('teaching-asset:error', { text: w.text, token, error: e.message });
+    return false;
+  }
 }
 
 function parsePreprocessAudio(pd) {
@@ -1825,33 +1945,14 @@ preprocessBtn.addEventListener('click', async () => {
       await ttsCache.set(hkey, { pcm: combinedPcm, charTime: allCharTime, charSource: allCharSource, charGroup: allCharGroup, sentenceRanges, chunkReports, sr, ch, bits, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature });
     }
 
-    preprocessFill.style.width = '92%';
-    const clipTexts = extractUnique(text);
-    const clipResult = await preloadSegmentClips(clipTexts, (done, total, ok, fail) => {
-      const pct = 92 + Math.round(7 * done / Math.max(1, total));
-      preprocessFill.style.width = pct + '%';
-      statusBar.textContent = `⚡ 准备字词发音 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
-    });
-    preprocessFill.style.width = '99%';
-    const contextUnits = buildContextClipUnits();
-    const contextResult = await preloadContextClips(contextUnits, (done, total, ok, fail) => {
-      statusBar.textContent = `⚡ 准备短词上下文 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
-    });
-    const failedContextKeys = new Set((contextResult.details || []).filter(d => d.si != null && d.wi != null).map(d => `${d.si}:${d.wi}`));
-    const teachingUnits = buildTeachingRepeatClipUnits(failedContextKeys);
-    const teachingResult = await preloadTeachingRepeatClips(teachingUnits, (done, total, ok, fail) => {
-      statusBar.textContent = `⚡ 准备上下文复读 ${done}/${total} (${ok}成功${fail ? ', '+fail+'失败' : ''})...`;
-    });
-
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
     const spokenTotal = chunks.reduce((sum, c) => sum + charLen(c.text), 0);
-    const clipMsg = clipResult.total ? `, 字词clip ${clipResult.ok}/${clipResult.total}` : '';
-    const contextMsg = contextResult.total ? `, 短词上下文 ${contextResult.ok}/${contextResult.total}` : '';
-    const teachingMsg = teachingResult.total ? `, 上下文复读 ${teachingResult.ok}/${teachingResult.total}` : '';
-    debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, clipResult, contextResult, teachingResult, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
+    const teachingAssetMode = { mode: 'on-demand', charAudio: true, wordAudio: true, skippedLegacyPreload: true };
+    debugLog('preprocess:mvp-teaching-assets', teachingAssetMode);
+    debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, teachingAssetMode, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
     renderDebugPanel();
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳${clipMsg}${contextMsg}${teachingMsg})`;
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳，字词教学音频按需生成)`;
     showToast('完成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
@@ -2654,76 +2755,35 @@ async function playWord(si, wi) {
     if (!ensureSongDataCurrent('play-word')) return;
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
-    const defaultContextUnit = contextUnitForWord(si, wi);
-    const ctxOk = await playContextSegmentClip(defaultContextUnit, rate, token);
+    const assetRoute = wLen <= 1 ? 'char-audio' : 'word-audio';
+    const assetOk = await playTeachingAssetForWord(w, rate, token);
     if (!isPlaybackCurrent(token)) return;
-    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'context-clip', ok: ctxOk, token });
-    if (ctxOk) return;
-    const wideContextUnit = contextUnitForWord(si, wi, 6);
-    const shouldTryWideContext = wideContextUnit && (!defaultContextUnit || contextClipCacheKey(wideContextUnit) !== contextClipCacheKey(defaultContextUnit));
-    if (shouldTryWideContext) {
-      const wideCtxOk = await playContextSegmentClip(wideContextUnit, rate, token);
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'context-clip-wide', ok: wideCtxOk, token });
-      if (wideCtxOk) return;
-    }
-    const teachingUnit = teachingRepeatUnitForWord(si, wi);
-    const teachingOk = await playTeachingRepeatClip(teachingUnit, rate, token);
-    if (!isPlaybackCurrent(token)) return;
-    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'teaching-repeat-clip', ok: teachingOk, token });
-    if (teachingOk) return;
-    if (wLen === 1 && isContextRangeReliable(songData, w.start, w.end)) {
-      const directOk = await playCharRange(w.start, w.end, rate, {
-        guardNeighbors: true,
-        neighborBorrowMs: 42,
-        prePadMs: 42,
-        postPadMs: 58,
-        minMs: 240,
-        snapToLowEnergy: true,
-        token,
-        debug: { route: 'song-direct-char-range', kind: 'word', si, wi, text: w.text }
-      });
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'song-direct-char-range', ok: directOk, token });
-      if (directOk) return;
-    }
-    if (wLen > 1) {
-      const clipOk = await playSegmentClip(w.text, rate, token);
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'exact-clip', ok: clipOk, token });
-      if (clipOk) return;
-    }
-    let ok = false;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: assetRoute, ok: assetOk, token });
+    if (assetOk) return;
+
     const songRangeReliability = contextRangeReliability(songData, w.start, w.end);
     if (songRangeReliability.ok) {
-      ok = await playCharRange(w.start, w.end, rate, {
+      const fallbackOk = await playCharRange(w.start, w.end, rate, {
         guardNeighbors: true,
         neighborBorrowMs: wLen <= 1 ? 42 : 34,
         prePadMs: wLen <= 1 ? 42 : 34,
-        postPadMs: wLen <= 1 ? 58 : 48,
+        postPadMs: wLen <= 1 ? 90 : 70,
         minMs: wLen <= 1 ? 240 : 210,
         rejectBelowMs: wLen <= 1 ? 170 : 120,
         snapToLowEnergy: true,
         token,
-        debug: { route: 'song-char-range', kind: 'word', si, wi, text: w.text }
+        debug: { route: 'sentence-subtitle-fallback', kind: 'word', si, wi, text: w.text }
       });
       if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'song-char-range', ok, token });
-      if (ok) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'sentence-subtitle-fallback', ok: fallbackOk, token });
+      if (fallbackOk) return;
     } else {
-      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'song-char-range', reason: songRangeReliability.reason || 'low-confidence-song-range', reliability: songRangeReliability, token });
+      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'sentence-subtitle-fallback', reason: songRangeReliability.reason || 'low-confidence-song-range', reliability: songRangeReliability, token });
     }
-    if (wLen === 1 && isolatedCharFallbackEnabled) {
-      const clipOk = await playSegmentClip(w.text, rate, token);
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'exact-clip-last-resort', ok: clipOk, token });
-      if (clipOk) return;
-    } else if (wLen === 1) {
-      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'exact-clip-last-resort', reason: 'isolated-char-fallback-disabled', token });
-    }
-    debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'preprocessed-routes-failed' });
-    openDebugPanelForIssue('word-preprocessed-routes-failed');
-    statusBar.textContent = `⚠ "${w.text}" 未找到可靠预处理音频，请复制调试报告`;
+
+    debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'teaching-asset-and-sentence-fallback-failed' });
+    openDebugPanelForIssue('word-teaching-asset-failed');
+    statusBar.textContent = `⚠ "${w.text}" 教学音频生成失败，请复制调试报告`;
     return;
   }
   debugLog('play:fallback', { kind: 'word', si, wi, text: w.text, route: 'speak-one-cached', token });
