@@ -54,7 +54,7 @@ TTS 不决定读音，AI 也不决定读音。读音标准来自：
 - 自然整句：可测试 `speech-2.8-hd`，速度约 `0.90-1.0`。
 - 教学场景不要使用强情绪、笑声、叹气、喘息等标签。
 
-教学请求正文只放真正要朗读的粤语文本，读音约束优先放进 `pronunciation_dict`，避免模型把括号里的粤拼当成额外内容朗读。
+教学请求要按资产类型区分：词组/短语正文只放真正要朗读的粤语文本，读音约束优先放进 `pronunciation_dict`；单字在 MiniMax 上容易被孤字误解析，MVP 先使用官方支持的行内粤拼前置替换。
 
 例如正文保持：
 
@@ -152,7 +152,7 @@ interface TtsQaResult {
 第一阶段只验证新音频模型是否成立：
 
 1. 保留现有整句预处理，用于句子播放。
-2. 新增独立 `char_audio` / `word_audio`，有粤拼就用 `pronunciation_dict` 固定读音。
+2. 新增独立 `char_audio` / `word_audio`：词组用 `pronunciation_dict`，单字用行内粤拼前置替换，并在调试日志记录 `pronunciationMode`。
 3. 本地 IndexedDB 用 hash 缓存教学音频。
 4. 字/词点击优先播放独立教学音频。
 5. 只有教学音频失败时，才用整句时间轴区间兜底。
