@@ -108,6 +108,7 @@ async function minimaxTts(env, body, opts = {}) {
       model: body.model || opts.model || 'speech-2.8-hd',
       text: body.text,
       stream: false,
+      pronunciation_dict: body.pronunciation_dict || opts.pronunciation_dict,
       language_boost: body.language_boost || opts.language_boost || 'Chinese,Yue',
       voice_setting: {voice_id: body.voice||'Cantonese_GentleLady', speed: body.speed||1.0, vol:1.0, pitch:0},
       audio_setting: {sample_rate:32000, bitrate:128000, format: audioFormat, channel:1},

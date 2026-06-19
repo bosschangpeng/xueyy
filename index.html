@@ -353,12 +353,11 @@ function isPlaybackCurrent(token) {
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
 const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_mvp_v1';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_mvp_v2';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
 const TEACHING_ASSET_FORMAT = 'wav';
-const TEACHING_ASSET_PAUSE = '<#0.06#>';
 
 function textChars(text) {
   return Array.from(text || '');
@@ -890,7 +889,8 @@ function stopSpeak() {
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
 let minimaxVoice = localStorage.getItem('mxVoice') || 'Cantonese_GentleLady';
-let isolatedCharFallbackEnabled = localStorage.getItem('isolatedCharFallback') === '1';
+let isolatedCharFallbackEnabled = false;
+localStorage.removeItem('isolatedCharFallback');
 let currentAudio = null;
 
 const MX_VOICES = [
@@ -927,10 +927,10 @@ const cacheCountEl = document.getElementById('cacheCount');
 
 onlineTtsToggle.checked = onlineTtsEnabled;
 onlineTtsToggle.checked = onlineTtsEnabled;
-isolatedCharFallbackToggle.checked = isolatedCharFallbackEnabled;
+isolatedCharFallbackToggle.checked = false;
 if (onlineTtsEnabled) {
   mxVoiceWrap.style.display = '';
-  isolatedCharFallbackWrap.style.display = '';
+  isolatedCharFallbackWrap.style.display = 'none';
   document.getElementById('preprocessRow').style.display = '';
   document.getElementById('preprocessBtn').style.display = '';
   updateCacheStat();
@@ -946,7 +946,7 @@ onlineTtsToggle.addEventListener('change', () => {
   localStorage.setItem('onlineTts', onlineTtsEnabled ? '1' : '0');
   if (onlineTtsEnabled) {
     mxVoiceWrap.style.display = '';
-    isolatedCharFallbackWrap.style.display = '';
+    isolatedCharFallbackWrap.style.display = 'none';
     document.getElementById('preprocessRow').style.display = '';
     document.getElementById('preprocessBtn').style.display = '';
     initMxVoice(); updateCacheStat();
@@ -961,9 +961,10 @@ onlineTtsToggle.addEventListener('change', () => {
 });
 
 isolatedCharFallbackToggle.addEventListener('change', () => {
-  isolatedCharFallbackEnabled = isolatedCharFallbackToggle.checked;
-  localStorage.setItem('isolatedCharFallback', isolatedCharFallbackEnabled ? '1' : '0');
-  debugLog('settings:isolated-char-fallback', { enabled: isolatedCharFallbackEnabled });
+  isolatedCharFallbackEnabled = false;
+  isolatedCharFallbackToggle.checked = false;
+  localStorage.removeItem('isolatedCharFallback');
+  debugLog('settings:isolated-char-fallback', { enabled: false, disabled: true });
 });
 
 // IndexedDB TTS 缓存
@@ -1143,6 +1144,10 @@ function normalizeCantoneseTtsText(text) {
   return s2tConvert(String(text || '').trim());
 }
 
+function compactTtsText(text) {
+  return normalizeCantoneseTtsText(text).replace(/\s+/g, '');
+}
+
 function jyutpingPartsForText(text) {
   const normalizedText = normalizeCantoneseTtsText(text);
   const chars = textChars(normalizedText);
@@ -1156,32 +1161,57 @@ function jyutpingForTeachingText(text) {
   return jyutpingPartsForText(text).filter(Boolean).join(' ');
 }
 
-function miniMaxTeachingText(text, type) {
-  const normalizedText = normalizeCantoneseTtsText(text);
-  const chars = textChars(normalizedText).filter(ch => !/\s/u.test(ch));
-  const parts = jyutpingPartsForText(normalizedText);
-  const rendered = chars.map((ch, i) => {
-    const jp = parts[i];
-    return jp && jp !== '?' ? `${ch}(${jp})` : ch;
-  });
-  return rendered.join(type === 'char' ? '' : TEACHING_ASSET_PAUSE);
+function normalizeJyutpingSyllables(jyutping) {
+  return String(jyutping || '').split(/\s+/).map(p => p.trim()).filter(p => p && p !== '?');
 }
 
-function teachingAssetForWord(w) {
+function pronunciationToneForText(text, jyutping) {
+  const ttsText = compactTtsText(text);
+  const syllables = normalizeJyutpingSyllables(jyutping);
+  if (!ttsText || !syllables.length) return '';
+  return `${ttsText}/${syllables.map(jp => `(${jp})`).join('')}`;
+}
+
+function contextualJyutpingOverride(text, context = {}) {
+  const normalizedText = compactTtsText(text);
+  const sentenceText = compactTtsText(context?.sentence?.text || '');
+  const words = Array.isArray(context?.sentence?.words) ? context.sentence.words : [];
+  const prevText = compactTtsText(words[context.wi - 1]?.text || '');
+  const localText = compactTtsText(prevText + normalizedText);
+
+  if (normalizedText === '望著') {
+    return { jyutping: 'mong6 zoek6', reason: 'context:望著' };
+  }
+  if (normalizedText === '著' && (sentenceText.includes('望著') || localText.endsWith('望著'))) {
+    return { jyutping: 'zoek6', reason: 'context:望著' };
+  }
+  return null;
+}
+
+function miniMaxTeachingText(text) {
+  return compactTtsText(text);
+}
+
+function teachingAssetForWord(w, context = {}) {
   if (!w || !w.text) return null;
   const type = charLen(w.text) <= 1 ? 'char' : 'word';
-  const normalizedText = normalizeCantoneseTtsText(w.text);
-  const jyutping = jyutpingForTeachingText(normalizedText);
+  const normalizedText = compactTtsText(w.text);
+  const override = contextualJyutpingOverride(w.text, context);
+  const jyutping = override?.jyutping || jyutpingForTeachingText(normalizedText);
+  const pronunciationTone = pronunciationToneForText(normalizedText, jyutping);
   return {
     type,
     text: w.text,
     normalizedText,
     jyutping,
-    ttsText: miniMaxTeachingText(w.text, type),
+    ttsText: miniMaxTeachingText(w.text),
+    pronunciationTone,
+    pronunciationDict: pronunciationTone ? { tone: [pronunciationTone] } : null,
+    pronunciationReason: override?.reason || '',
     model: TEACHING_ASSET_MODEL,
     speed: type === 'char' ? TEACHING_CHAR_SPEED : TEACHING_WORD_SPEED,
     format: TEACHING_ASSET_FORMAT,
-    pauseStrategy: type === 'char' ? 'none' : 'jyutping_006'
+    pauseStrategy: 'clean_text_pronunciation_dict'
   };
 }
 
@@ -1190,13 +1220,15 @@ async function fetchTeachingTtsFromMiniMax(asset) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      text: asset.ttsText || asset.normalizedText,
+      text: asset.normalizedText,
       voice: minimaxVoice,
       speed: asset.speed,
       model: asset.model,
       format: asset.format,
+      language_boost: 'Chinese,Yue',
       output_format: 'hex',
       aigc_watermark: false,
+      pronunciation_dict: asset.pronunciationDict || undefined,
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1212,27 +1244,27 @@ async function ensureTeachingAssetCached(asset) {
   const cacheKey = teachingAssetCacheKey(asset);
   let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
   if (blob) {
-    debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, cacheKey: cacheKey.slice(0, 18) });
+    debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationReason: asset.pronunciationReason, cacheKey: cacheKey.slice(0, 18) });
     return { blob, cacheKey, fromCache: true };
   }
-  debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, ttsText: asset.ttsText, model: asset.model, speed: asset.speed });
+  debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
   blob = await fetchTeachingTtsFromMiniMax(asset);
   if (cacheAvailable) await ttsCache.set(cacheKey, blob);
   return { blob, cacheKey, fromCache: false };
 }
 
-async function playTeachingAssetForWord(w, rate, token) {
+async function playTeachingAssetForWord(w, rate, token, context = {}) {
   if (!onlineTtsEnabled || !w || !w.text) return false;
   if (!isPlaybackCurrent(token)) return false;
-  const asset = teachingAssetForWord(w);
+  const asset = teachingAssetForWord(w, context);
   if (!asset) return false;
   try {
     const result = await ensureTeachingAssetCached(asset);
     if (!result?.blob || !isPlaybackCurrent(token)) return false;
     const route = asset.type === 'char' ? 'char-audio' : 'word-audio';
-    debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
+    debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationReason: asset.pronunciationReason, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
     statusBar.textContent = `🔊: "${asset.text}" (${asset.type === 'char' ? '单字教学' : '词组教学'})`;
-    return await playAudioBlob(result.blob, rate, token, { route, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping });
+    return await playAudioBlob(result.blob, rate, token, { route, text: asset.text, normalizedText: asset.normalizedText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationReason: asset.pronunciationReason });
   } catch (e) {
     debugLog('teaching-asset:error', { text: w.text, token, error: e.message });
     return false;
@@ -2756,7 +2788,7 @@ async function playWord(si, wi) {
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
     const assetRoute = wLen <= 1 ? 'char-audio' : 'word-audio';
-    const assetOk = await playTeachingAssetForWord(w, rate, token);
+    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi });
     if (!isPlaybackCurrent(token)) return;
     debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: assetRoute, ok: assetOk, token });
     if (assetOk) return;
