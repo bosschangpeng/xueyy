@@ -54,7 +54,7 @@ TTS 不决定读音，AI 也不决定读音。读音标准来自：
 - 自然整句：可测试 `speech-2.8-hd`，速度约 `0.90-1.0`。
 - 教学场景不要使用强情绪、笑声、叹气、喘息等标签。
 
-教学请求要按资产类型区分：词组/短语正文只放真正要朗读的粤语文本，读音约束优先放进 `pronunciation_dict`；单字不能直接把孤字交给 MiniMax，优先使用当前句内最小上下文载体（如“苍翠”“望著”）生成源音频，再用时间轴取目标字，生成干净 `char_audio`。
+教学请求要按资产类型区分：词组/短语正文只放真正要朗读的粤语文本，读音约束优先放进 `pronunciation_dict`。MiniMax 当前不再承担教学级 `char_audio` 主路径：孤字直发会乱加音节，载体切片会短、错位、不匹配，因此 MiniMax 单字只允许作为完整上下文载体播放，不再从载体里裁出“伪单字”。真正干净的 `char_audio` 需要后续接入专用单字 TTS、录音素材库或人工复核素材。
 
 例如正文保持：
 
@@ -77,13 +77,17 @@ TTS 不决定读音，AI 也不决定读音。读音标准来自：
 用户点击字/词时：
 
 ```ts
-if (char_audio or word_audio exists) {
-  play(teaching_asset);
+if (word_audio exists) {
+  play(word_audio);
+} else if (clicked single char and char_context_audio exists) {
+  play(full context carrier);
+} else if (future verified char_audio exists) {
+  play(char_audio);
 } else {
-  generateOrQueueTeachingAsset();
+  showNeedsReviewOrQueue();
 }
 
-// 只有作为兜底：
+// 只允许作为诊断或人工辅助，不作为默认教学点读：
 playSentenceSegmentBySubtitleWithPadding();
 ```
 
@@ -152,10 +156,10 @@ interface TtsQaResult {
 第一阶段只验证新音频模型是否成立：
 
 1. 保留现有整句预处理，用于句子播放。
-2. 新增独立 `char_audio` / `word_audio`：词组用 `pronunciation_dict`，单字用上下文载体生成并裁出目标字，同一个载体源音频全局缓存复用，单字切片使用能量边界和载体比例，调试日志记录 `pronunciationMode`、`carrierReason`、`sliceStrategy` 和队列状态。
+2. 新增独立 `word_audio`，并把 MiniMax 单字路线降级为 `char_context_audio`：词组用 `pronunciation_dict` 独立生成；单字点击播放完整上下文载体（优先已知词/自然二字组合，如“望著”“泪眼”），不再裁切成伪单字。调试日志记录 `playbackKind`、`carrierReason`、`targetJyutping` 和队列状态。真正 `char_audio` 暂不由 MiniMax 生成，留给专用引擎/录音素材/人工复核阶段。
 3. 本地 IndexedDB 用 hash 缓存教学音频。预处理完成后启动前端队列预热必要字词资产，点击不负责插队生成。歌词重复句子用 chunk 级预处理缓存复用，避免重复请求 API。
-4. 字/词点击优先播放独立教学音频。
-5. 只有教学音频失败时，才用整句时间轴区间兜底。
+4. 词组点击优先播放独立教学音频；单字点击优先播放上下文载体音频，并在 UI/调试中明确标记为上下文，不伪装成纯单字。
+5. 单字不再自动回落到整句时间轴切片，避免继续出现短、错位、不匹配的错误样本。
 6. 在线 TTS 关闭时，离线 TTS 基础功能保持原逻辑。
 
 后台队列、课程资产表、QA 仪表盘、人工复核、多模型比较放到后续阶段。

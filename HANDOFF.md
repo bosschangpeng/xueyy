@@ -122,3 +122,14 @@ function renderSentences(text) {
 - `MINIMAX_API_KEY` — MiniMax API Key
 - `MINIMAX_GROUP_ID` — MiniMax Group ID
 - `YUE_KV` — KV namespace
+
+## 2026-06-20 TTS 架构更新
+
+当前线上策略已经从“裁单字”收口到“句子/词组稳定优先”：
+
+- `sentence_audio`：MiniMax 预处理整句，用于整句播放、高亮、跟读和诊断。
+- `word_audio`：MiniMax 独立生成词组/短语音频，使用 `pronunciation_dict` 约束读音，是当前可靠教学点读主路径。
+- `char_context_audio`：单字点击时播放完整上下文载体（优先已知词或自然二字组合），不再从载体里裁出伪单字。
+- `char_audio`：仍是完整架构目标，但 MiniMax 已证明不适合作为当前实现路径；后续需要专用单字 TTS、录音素材库或人工复核素材。
+
+重要原则：不要再把 MiniMax subtitle 或载体切片当成干净单字音频来源。单字若走 MiniMax，只能作为完整上下文播放并在调试里标记 `char-context-audio`。在线 TTS 关闭时，离线 TTS 路径保持原逻辑，不依赖预处理教学资产。
