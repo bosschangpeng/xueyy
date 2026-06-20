@@ -544,7 +544,14 @@ function summarizeSubtitle(subtitle) {
 async function preprocessTts(env, body) {
   const text = body.text || '';
 
-  const data = await minimaxTts(env, { text, voice: body.voice, speed: 0.85 }, {
+  const data = await minimaxTts(env, {
+    text,
+    voice: body.voice,
+    speed: body.speed || 0.85,
+    model: body.model,
+    language_boost: body.language_boost,
+    pronunciation_dict: body.pronunciation_dict,
+  }, {
     format: 'wav', subtitle_enable: true, subtitle_type: 'word',
   });
 

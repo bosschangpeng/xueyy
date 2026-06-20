@@ -353,7 +353,7 @@ function isPlaybackCurrent(token) {
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
 const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_mvp_v3';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_full_v1';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
@@ -543,7 +543,12 @@ function teachingAssetCacheKey(asset) {
     asset.type,
     minimaxVoice,
     asset.normalizedText,
+    asset.requestText || '',
     asset.jyutping,
+    asset.pronunciationMode || '',
+    asset.sourceMode || '',
+    asset.targetCharIndex ?? '',
+    asset.pronunciationTone || '',
     asset.model,
     asset.speed,
     asset.format,
@@ -688,7 +693,7 @@ async function playSentenceRange(si, rate, token) {
     if (lastCharMs === null || ct[1] > lastCharMs) lastCharMs = ct[1];
   }
   const speechStart = r.speechStartMs ?? r.startMs;
-  const playbackStartMs = firstCharMs == null ? speechStart : Math.max(speechStart, firstCharMs - 90);
+  const playbackStartMs = firstCharMs == null ? speechStart : Math.max(speechStart, firstCharMs - 35);
   const playbackEndMs = Math.min(r.endMs, Math.max(r.audioEndMs ?? r.endMs, (lastCharMs ?? r.endMs) + 260));
   const tailMs = Math.max(0, r.endMs - (r.audioEndMs ?? r.endMs));
   const effectiveTailMs = tailMs / Math.max(0.1, rate || 1);
@@ -698,7 +703,7 @@ async function playSentenceRange(si, rate, token) {
     postPadMs: 0,
     holdMs,
     token,
-    debug: { route: 'sentence-range', kind: 'sentence', si, startChar: r.charStart, endChar: r.charEnd, skippedLeadMs: Math.round(playbackStartMs - r.startMs), leadMs: Math.round(r.leadMs ?? (speechStart - r.startMs)), tailMs: Math.round(tailMs), effectiveTailMs: Math.round(effectiveTailMs), text: currentSentences[si]?.text || '' }
+    debug: { route: 'sentence-range', kind: 'sentence', si, startChar: r.charStart, endChar: r.charEnd, skippedLeadMs: Math.round(playbackStartMs - r.startMs), leadMs: Math.round(r.leadMs ?? (speechStart - r.startMs)), tailMs: Math.round(tailMs), effectiveTailMs: Math.round(effectiveTailMs), fadeInMs: 18, fadeOutMs: 14, text: currentSentences[si]?.text || '' }
   });
 }
 
@@ -956,6 +961,7 @@ onlineTtsToggle.addEventListener('change', () => {
   onlineTtsEnabled = onlineTtsToggle.checked;
   localStorage.setItem('onlineTts', onlineTtsEnabled ? '1' : '0');
   if (!onlineTtsEnabled && songData) {
+    resetTeachingAssetPrewarm('online-off');
     debugLog('songData:cleared-by-online-off', { reason: 'toggle-off' });
     songData = null;
     renderDebugPanel();
@@ -1076,6 +1082,18 @@ const MINIMAX_RATE_LIMIT_RETRY_MS = 65000;
 const MINIMAX_RATE_LIMIT_RETRIES = 3;
 let minimaxNextRequestAt = 0;
 let minimaxQueue = Promise.resolve();
+let teachingAssetPrewarmSession = 0;
+let teachingAssetPrewarmState = {
+  active: false,
+  reason: '',
+  total: 0,
+  done: 0,
+  cached: 0,
+  generated: 0,
+  failed: 0,
+  startedAt: 0,
+  finishedAt: 0,
+};
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1188,11 +1206,15 @@ function pronunciationToneForText(text, jyutping) {
   return `${ttsText}/${syllables.map(jp => `(${jp})`).join('')}`;
 }
 
-function inlineJyutpingPrefixForText(text, jyutping) {
+function controlledCharSourceText(text) {
   const ttsText = compactTtsText(text);
+  return ttsText ? ttsText.repeat(3) : '';
+}
+
+function repeatedJyutping(jyutping, count) {
   const syllables = normalizeJyutpingSyllables(jyutping);
-  if (!ttsText || !syllables.length) return ttsText;
-  return `${syllables.map(jp => `(${jp})`).join('')}${ttsText}`;
+  if (!syllables.length) return '';
+  return Array.from({ length: count }, () => syllables[0]).join(' ');
 }
 
 function contextualJyutpingOverride(text, context = {}) {
@@ -1222,13 +1244,23 @@ function teachingAssetForWord(w, context = {}) {
   const override = contextualJyutpingOverride(w.text, context);
   const jyutping = override?.jyutping || jyutpingForTeachingText(normalizedText);
   const syllables = normalizeJyutpingSyllables(jyutping);
-  const pronunciationTone = pronunciationToneForText(normalizedText, jyutping);
-  const pronunciationMode = type === 'char' && syllables.length
-    ? 'inline_prefix_jyutping'
-    : (pronunciationTone ? 'pronunciation_dict' : 'none');
-  const requestText = pronunciationMode === 'inline_prefix_jyutping'
-    ? inlineJyutpingPrefixForText(normalizedText, jyutping)
-    : miniMaxTeachingText(w.text);
+  let requestText = miniMaxTeachingText(w.text);
+  let pronunciationTone = pronunciationToneForText(normalizedText, jyutping);
+  let pronunciationMode = pronunciationTone ? 'pronunciation_dict' : 'none';
+  let pronunciationDict = pronunciationTone ? { tone: [pronunciationTone] } : null;
+  let sourceMode = 'direct_word';
+  let targetCharIndex = null;
+
+  if (type === 'char' && normalizedText && syllables.length) {
+    requestText = controlledCharSourceText(normalizedText);
+    const sourceJyutping = repeatedJyutping(jyutping, charLen(requestText));
+    pronunciationTone = pronunciationToneForText(requestText, sourceJyutping);
+    pronunciationMode = 'controlled_char_triplet';
+    pronunciationDict = pronunciationTone ? { tone: [pronunciationTone] } : null;
+    sourceMode = 'controlled_char_triplet';
+    targetCharIndex = 1;
+  }
+
   return {
     type,
     text: w.text,
@@ -1238,8 +1270,10 @@ function teachingAssetForWord(w, context = {}) {
     requestText,
     pronunciationTone,
     pronunciationMode,
-    pronunciationDict: pronunciationMode === 'pronunciation_dict' ? { tone: [pronunciationTone] } : null,
+    pronunciationDict,
     pronunciationReason: override?.reason || '',
+    sourceMode,
+    targetCharIndex,
     model: TEACHING_ASSET_MODEL,
     speed: type === 'char' ? TEACHING_CHAR_SPEED : TEACHING_WORD_SPEED,
     format: TEACHING_ASSET_FORMAT,
@@ -1247,7 +1281,109 @@ function teachingAssetForWord(w, context = {}) {
   };
 }
 
+function buildPcmSliceData(source, startMs, endMs, opts = {}) {
+  const pcm = source?.pcm || source?.p;
+  const sr = source?.sr || 32000;
+  const ch = source?.ch || 1;
+  const bits = source?.bits || 16;
+  if (!pcm) return null;
+  const bytesPerMs = bytesPerMsFor(sr, ch, bits);
+  const blockAlign = blockAlignFor(ch, bits);
+  const pcmDurationMs = pcm.length / bytesPerMs;
+  let sliceStartMs = Math.max(0, startMs);
+  let sliceEndMs = Math.min(pcmDurationMs, endMs);
+  const minMs = opts.minMs || 260;
+  if (sliceEndMs - sliceStartMs < minMs) {
+    const need = minMs - (sliceEndMs - sliceStartMs);
+    const guardStartMs = Math.max(0, opts.guardStartMs ?? 0);
+    const guardEndMs = Math.min(pcmDurationMs, opts.guardEndMs ?? pcmDurationMs);
+    sliceStartMs = Math.max(guardStartMs, sliceStartMs - need / 2);
+    sliceEndMs = Math.min(guardEndMs, sliceEndMs + need / 2);
+  }
+  let sb = Math.floor(sliceStartMs * bytesPerMs);
+  let eb = Math.ceil(sliceEndMs * bytesPerMs);
+  sb -= sb % blockAlign;
+  eb -= eb % blockAlign;
+  if (eb <= sb || sb >= pcm.length) return null;
+  const slice = pcm.slice(sb, Math.min(eb, pcm.length));
+  if (slice.length < 100) return null;
+  return {
+    p: slice,
+    sr,
+    ch,
+    bits,
+    trim: {
+      startMs: Math.round(startMs),
+      endMs: Math.round(endMs),
+      sliceStartMs: Math.round(sliceStartMs),
+      sliceEndMs: Math.round(sliceEndMs),
+      sliceBytes: slice.length
+    }
+  };
+}
+
+async function fetchControlledCharAssetFromMiniMax(asset) {
+  const resp = await fetchMiniMaxProxy('/preprocess', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: asset.requestText,
+      voice: minimaxVoice,
+      speed: asset.speed,
+      model: asset.model,
+      language_boost: 'Chinese,Yue',
+      pronunciation_dict: asset.pronunciationDict || undefined,
+    }),
+  }, `teaching-${asset.type}`);
+  if (!resp.ok) {
+    let msg = '单字教学素材生成失败: ' + resp.status;
+    try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  const pd = await resp.json();
+  const clip = parsePreprocessAudio(pd);
+  const target = Math.min(Math.max(0, asset.targetCharIndex ?? 1), Math.max(0, clip.charTime.length - 1));
+  const ct = clip.charTime[target];
+  if (!ct || ct[1] <= ct[0]) throw new Error('单字教学素材缺少目标字时间轴');
+  const bytesPerMs = bytesPerMsFor(clip.sr, clip.ch, clip.bits);
+  const durationMs = clip.p.length / bytesPerMs;
+  const prevEnd = clip.charTime[target - 1]?.[1];
+  const nextStart = clip.charTime[target + 1]?.[0];
+  const guardStartMs = Number.isFinite(prevEnd) ? Math.max(0, prevEnd - 15) : 0;
+  const guardEndMs = Number.isFinite(nextStart) ? Math.min(durationMs, nextStart + 18) : durationMs;
+  const startMs = Math.max(guardStartMs, ct[0] - 45);
+  const endMs = Math.min(guardEndMs, ct[1] + 75);
+  const sliced = buildPcmSliceData(clip, startMs, endMs, { guardStartMs, guardEndMs, minMs: 280 });
+  if (!sliced) throw new Error('单字教学素材裁切失败');
+  const result = {
+    ...sliced,
+    controlledAsset: true,
+    sourceText: asset.requestText,
+    targetCharIndex: target,
+    targetTime: [Math.round(ct[0]), Math.round(ct[1])],
+    normalizedText: asset.normalizedText,
+    jyutping: asset.jyutping,
+    pronunciationMode: asset.pronunciationMode,
+  };
+  debugLog('teaching-asset:controlled-char-built', {
+    text: asset.text,
+    normalizedText: asset.normalizedText,
+    requestText: asset.requestText,
+    jyutping: asset.jyutping,
+    targetCharIndex: target,
+    targetTime: result.targetTime,
+    guardStartMs: Math.round(guardStartMs),
+    guardEndMs: Math.round(guardEndMs),
+    trim: result.trim,
+    coverage: clip.coverage || null
+  });
+  return result;
+}
+
 async function fetchTeachingTtsFromMiniMax(asset) {
+  if (asset?.sourceMode === 'controlled_char_triplet') {
+    return await fetchControlledCharAssetFromMiniMax(asset);
+  }
   const resp = await fetchMiniMaxProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1271,13 +1407,18 @@ async function fetchTeachingTtsFromMiniMax(asset) {
   return await resp.blob();
 }
 
-async function ensureTeachingAssetCached(asset) {
+async function ensureTeachingAssetCached(asset, opts = {}) {
   if (!asset) return null;
+  const allowFetch = opts.allowFetch !== false;
   const cacheKey = teachingAssetCacheKey(asset);
   let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
   if (blob) {
     debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, cacheKey: cacheKey.slice(0, 18) });
     return { blob, cacheKey, fromCache: true };
+  }
+  if (!allowFetch) {
+    debugLog('teaching-asset:missing-cache', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationMode: asset.pronunciationMode, cacheKey: cacheKey.slice(0, 18), prewarm: teachingAssetPrewarmState });
+    return { blob: null, cacheKey, fromCache: false, missing: true };
   }
   debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
   blob = await fetchTeachingTtsFromMiniMax(asset);
@@ -1285,13 +1426,17 @@ async function ensureTeachingAssetCached(asset) {
   return { blob, cacheKey, fromCache: false };
 }
 
-async function playTeachingAssetForWord(w, rate, token, context = {}) {
+async function playTeachingAssetForWord(w, rate, token, context = {}, opts = {}) {
   if (!onlineTtsEnabled || !w || !w.text) return false;
   if (!isPlaybackCurrent(token)) return false;
   const asset = teachingAssetForWord(w, context);
   if (!asset) return false;
   try {
-    const result = await ensureTeachingAssetCached(asset);
+    const result = await ensureTeachingAssetCached(asset, { allowFetch: opts.allowFetch !== false });
+    if (result?.missing) {
+      statusBar.textContent = `⏳ "${asset.text}" 教学音频生成中，暂用整句兜底`;
+      return false;
+    }
     if (!result?.blob || !isPlaybackCurrent(token)) return false;
     const route = asset.type === 'char' ? 'char-audio' : 'word-audio';
     debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
@@ -1301,6 +1446,89 @@ async function playTeachingAssetForWord(w, rate, token, context = {}) {
     debugLog('teaching-asset:error', { text: w.text, token, error: e.message });
     return false;
   }
+}
+
+function collectTeachingAssetsForCurrentText() {
+  const seen = new Set();
+  const chars = [];
+  const words = [];
+  for (let si = 0; si < currentSentences.length; si++) {
+    const s = currentSentences[si];
+    for (let wi = 0; wi < (s.words || []).length; wi++) {
+      const w = s.words[wi];
+      if (!w?.text || w.type === 'punct' || w.type === 'space') continue;
+      const asset = teachingAssetForWord(w, { sentence: s, si, wi });
+      if (!asset) continue;
+      const key = teachingAssetCacheKey(asset);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      (asset.type === 'char' ? chars : words).push({ asset, si, wi, key });
+    }
+  }
+  return chars.concat(words);
+}
+
+function resetTeachingAssetPrewarm(reason = '') {
+  teachingAssetPrewarmSession++;
+  teachingAssetPrewarmState = {
+    active: false,
+    reason,
+    total: 0,
+    done: 0,
+    cached: 0,
+    generated: 0,
+    failed: 0,
+    startedAt: 0,
+    finishedAt: Date.now(),
+  };
+}
+
+async function prewarmTeachingAssets(reason = 'preprocess') {
+  if (!onlineTtsEnabled || !cacheAvailable) return;
+  const items = collectTeachingAssetsForCurrentText();
+  const session = ++teachingAssetPrewarmSession;
+  const signature = currentAlignmentSignature();
+  teachingAssetPrewarmState = { active: true, reason, total: items.length, done: 0, cached: 0, generated: 0, failed: 0, startedAt: Date.now(), finishedAt: 0 };
+  debugLog('teaching-prewarm:start', { reason, total: items.length, chars: items.filter(x => x.asset.type === 'char').length, words: items.filter(x => x.asset.type === 'word').length, signature });
+  renderDebugPanel();
+  for (let i = 0; i < items.length; i++) {
+    if (session !== teachingAssetPrewarmSession || !onlineTtsEnabled || signature !== currentAlignmentSignature()) {
+      debugLog('teaching-prewarm:cancel', { reason, done: teachingAssetPrewarmState.done, total: teachingAssetPrewarmState.total });
+      break;
+    }
+    const { asset, key } = items[i];
+    try {
+      const cached = await ttsCache.get(key);
+      if (cached) {
+        teachingAssetPrewarmState.cached++;
+      } else {
+        await ensureTeachingAssetCached(asset, { allowFetch: true });
+        teachingAssetPrewarmState.generated++;
+      }
+    } catch (e) {
+      teachingAssetPrewarmState.failed++;
+      debugLog('teaching-prewarm:item-failed', { text: asset.text, type: asset.type, normalizedText: asset.normalizedText, requestText: asset.requestText, error: e.message });
+    }
+    teachingAssetPrewarmState.done++;
+    if (i === 0 || teachingAssetPrewarmState.done === items.length || teachingAssetPrewarmState.done % 5 === 0) {
+      statusBar.textContent = `⏳ 教学音频队列 ${teachingAssetPrewarmState.done}/${items.length}（新${teachingAssetPrewarmState.generated} 缓存${teachingAssetPrewarmState.cached} 失败${teachingAssetPrewarmState.failed}）`;
+      debugLog('teaching-prewarm:progress', { ...teachingAssetPrewarmState });
+      renderDebugPanel();
+    }
+  }
+  if (session === teachingAssetPrewarmSession) {
+    teachingAssetPrewarmState.active = false;
+    teachingAssetPrewarmState.finishedAt = Date.now();
+    debugLog('teaching-prewarm:complete', { ...teachingAssetPrewarmState });
+    statusBar.textContent = `✅ 教学音频队列完成 ${teachingAssetPrewarmState.done}/${teachingAssetPrewarmState.total}（失败${teachingAssetPrewarmState.failed}）`;
+    renderDebugPanel();
+    await updateCacheStat();
+  }
+}
+
+function scheduleTeachingAssetPrewarm(reason = 'preprocess') {
+  if (!onlineTtsEnabled || !cacheAvailable) return;
+  setTimeout(() => { prewarmTeachingAssets(reason).catch(e => debugLog('teaching-prewarm:error', { reason, error: e.message })); }, 0);
 }
 
 function parsePreprocessAudio(pd) {
@@ -1376,7 +1604,7 @@ async function playAudioBlob(data, rate, token, debugMeta = {}) {
       debugLog('audio:stale-after-decode', { route: debugMeta.route || 'blob', token });
       return false;
     }
-    const fade = applyAudioBufferFades(audioBuf);
+    const fade = applyAudioBufferFades(audioBuf, debugMeta.fadeInMs ?? 3, debugMeta.fadeOutMs ?? 8);
     const src = ctx.createBufferSource();
     src.buffer = audioBuf;
     src.playbackRate.value = rate;
@@ -1856,6 +2084,7 @@ preprocessBtn.addEventListener('click', async () => {
       statusBar.textContent = `✅ 从缓存加载`;
       preprocessing = false; preprocessBtn.disabled = false; preprocessBar.style.display = 'none';
       await updateCacheStat();
+      scheduleTeachingAssetPrewarm('preprocess-cache-hit');
       return;
     } else if (cached && cacheIssue) {
       debugLog('preprocess:cache-bypass', { reason: cacheIssue, alignmentSignature, cachedSignature: cached.alignmentSignature || '', cachedVersion: cached.alignVersion || '' });
@@ -2012,12 +2241,13 @@ preprocessBtn.addEventListener('click', async () => {
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
     const spokenTotal = chunks.reduce((sum, c) => sum + charLen(c.text), 0);
-    const teachingAssetMode = { mode: 'on-demand', charAudio: true, wordAudio: true, skippedLegacyPreload: true };
+    const teachingAssetMode = { mode: 'queued-prewarm', charAudio: true, wordAudio: true, controlledCharAudio: true, clickFetch: false };
     debugLog('preprocess:mvp-teaching-assets', teachingAssetMode);
     debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, teachingAssetMode, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
     renderDebugPanel();
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳，字词教学音频按需生成)`;
-    showToast('完成');
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳，教学音频队列已启动)`;
+    scheduleTeachingAssetPrewarm('preprocess-complete');
+    showToast('完成，教学音频后台生成中');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
     debugLog('preprocess:error', { error: e.message });
@@ -2033,6 +2263,7 @@ preprocessBtn.addEventListener('click', async () => {
 // 清除缓存
 document.getElementById('clearCacheBtn').addEventListener('click', async () => {
   await ttsCache.clear();
+  resetTeachingAssetPrewarm('cache-clear');
   songData = null;
   debugLog('cache:clear', { clearedSongData: true });
   renderDebugPanel();
@@ -2483,7 +2714,8 @@ function buildDebugReport() {
       alignVersion: ALIGN_SCHEMA_VERSION,
       rate: parseFloat(speedRange.value),
       volume: parseFloat(volumeRange.value),
-      cacheAvailable
+      cacheAvailable,
+      teachingAssetPrewarm: teachingAssetPrewarmState
     },
     input: {
       length: charLen(inputEl.value || ''),
@@ -2823,7 +3055,7 @@ async function playWord(si, wi) {
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
     const assetRoute = wLen <= 1 ? 'char-audio' : 'word-audio';
-    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi });
+    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: false });
     if (!isPlaybackCurrent(token)) return;
     debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: assetRoute, ok: assetOk, token });
     if (assetOk) return;
