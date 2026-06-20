@@ -353,7 +353,7 @@ function isPlaybackCurrent(token) {
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
 const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_full_v1';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_full_v2';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
@@ -553,6 +553,19 @@ function teachingAssetCacheKey(asset) {
     asset.speed,
     asset.format,
     asset.pauseStrategy
+  ].join('|'));
+}
+
+function teachingAssetSourceCacheKey(asset) {
+  return 'asset_src_' + hashText([
+    TEACHING_ASSET_SCHEMA_VERSION,
+    minimaxVoice,
+    asset.sourceMode || '',
+    asset.requestText || '',
+    asset.pronunciationTone || '',
+    asset.model,
+    asset.speed,
+    asset.format
   ].join('|'));
 }
 
@@ -1206,15 +1219,53 @@ function pronunciationToneForText(text, jyutping) {
   return `${ttsText}/${syllables.map(jp => `(${jp})`).join('')}`;
 }
 
-function controlledCharSourceText(text) {
-  const ttsText = compactTtsText(text);
-  return ttsText ? ttsText.repeat(3) : '';
+function isPlayableTtsChar(ch) {
+  const normalized = compactTtsText(ch);
+  return !!normalized && /[\u4e00-\u9fff]/u.test(normalized);
 }
 
-function repeatedJyutping(jyutping, count) {
-  const syllables = normalizeJyutpingSyllables(jyutping);
-  if (!syllables.length) return '';
-  return Array.from({ length: count }, () => syllables[0]).join(' ');
+function playableTtsCharAt(chars, index) {
+  const normalized = compactTtsText(chars?.[index] || '');
+  return isPlayableTtsChar(normalized) ? normalized : '';
+}
+
+function nearestPlayableCharIndex(chars, from, dir, minIndex, maxIndex) {
+  for (let i = from + dir; i >= minIndex && i < maxIndex; i += dir) {
+    if (playableTtsCharAt(chars, i)) return i;
+  }
+  return -1;
+}
+
+function jyutpingForCarrierSource(sourceText, targetIndex, targetJyutping) {
+  const chars = textChars(sourceText);
+  const wordParts = jyutpingPartsForText(sourceText);
+  const targetParts = normalizeJyutpingSyllables(targetJyutping);
+  if (targetParts.length === 1 && targetIndex >= 0 && targetIndex < chars.length) {
+    wordParts[targetIndex] = targetParts[0];
+  }
+  return wordParts.filter(Boolean).join(' ');
+}
+
+function carrierSourceForChar(w, context = {}, targetJyutping = '') {
+  const inputChars = textChars(inputEl.value || '');
+  const targetGlobal = Number.isFinite(w?.start) ? w.start : -1;
+  const fallbackText = compactTtsText(w?.text || '');
+  const targetText = playableTtsCharAt(inputChars, targetGlobal) || fallbackText;
+  if (!targetText) return { text: fallbackText, targetIndex: 0, jyutping: targetJyutping, reason: 'self' };
+
+  const sentStart = Number.isFinite(context?.sentence?.start) ? context.sentence.start : 0;
+  const sentEnd = Number.isFinite(context?.sentence?.end) ? context.sentence.end : inputChars.length;
+  const right = nearestPlayableCharIndex(inputChars, targetGlobal, 1, sentStart, sentEnd);
+  if (right >= 0) {
+    const sourceText = targetText + playableTtsCharAt(inputChars, right);
+    return { text: sourceText, targetIndex: 0, jyutping: jyutpingForCarrierSource(sourceText, 0, targetJyutping), reason: 'right-neighbor' };
+  }
+  const left = nearestPlayableCharIndex(inputChars, targetGlobal, -1, sentStart, sentEnd);
+  if (left >= 0) {
+    const sourceText = playableTtsCharAt(inputChars, left) + targetText;
+    return { text: sourceText, targetIndex: 1, jyutping: jyutpingForCarrierSource(sourceText, 1, targetJyutping), reason: 'left-neighbor' };
+  }
+  return { text: targetText, targetIndex: 0, jyutping: targetJyutping, reason: 'self' };
 }
 
 function contextualJyutpingOverride(text, context = {}) {
@@ -1251,14 +1302,17 @@ function teachingAssetForWord(w, context = {}) {
   let sourceMode = 'direct_word';
   let targetCharIndex = null;
 
+  let carrierReason = '';
   if (type === 'char' && normalizedText && syllables.length) {
-    requestText = controlledCharSourceText(normalizedText);
-    const sourceJyutping = repeatedJyutping(jyutping, charLen(requestText));
+    const carrier = carrierSourceForChar(w, context, jyutping);
+    requestText = carrier.text || normalizedText;
+    const sourceJyutping = carrier.jyutping || jyutping;
     pronunciationTone = pronunciationToneForText(requestText, sourceJyutping);
-    pronunciationMode = 'controlled_char_triplet';
+    pronunciationMode = 'context_carrier';
     pronunciationDict = pronunciationTone ? { tone: [pronunciationTone] } : null;
-    sourceMode = 'controlled_char_triplet';
-    targetCharIndex = 1;
+    sourceMode = 'context_carrier';
+    targetCharIndex = carrier.targetIndex ?? 0;
+    carrierReason = carrier.reason || '';
   }
 
   return {
@@ -1271,7 +1325,8 @@ function teachingAssetForWord(w, context = {}) {
     pronunciationTone,
     pronunciationMode,
     pronunciationDict,
-    pronunciationReason: override?.reason || '',
+    pronunciationReason: override?.reason || carrierReason || '',
+    carrierReason,
     sourceMode,
     targetCharIndex,
     model: TEACHING_ASSET_MODEL,
@@ -1322,7 +1377,13 @@ function buildPcmSliceData(source, startMs, endMs, opts = {}) {
   };
 }
 
-async function fetchControlledCharAssetFromMiniMax(asset) {
+async function ensureCarrierSourceCached(asset) {
+  const sourceCacheKey = teachingAssetSourceCacheKey(asset);
+  let clip = cacheAvailable ? await ttsCache.get(sourceCacheKey) : null;
+  if (clip) {
+    debugLog('teaching-asset:carrier-source-cache-hit', { text: asset.text, requestText: asset.requestText, sourceCacheKey: sourceCacheKey.slice(0, 18), pronunciationTone: asset.pronunciationTone });
+    return { clip, sourceCacheKey, fromCache: true };
+  }
   const resp = await fetchMiniMaxProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1336,13 +1397,21 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
-    let msg = '单字教学素材生成失败: ' + resp.status;
+    let msg = '单字载体素材生成失败: ' + resp.status;
     try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
   const pd = await resp.json();
-  const clip = parsePreprocessAudio(pd);
-  const target = Math.min(Math.max(0, asset.targetCharIndex ?? 1), Math.max(0, clip.charTime.length - 1));
+  clip = parsePreprocessAudio(pd);
+  if (cacheAvailable) await ttsCache.set(sourceCacheKey, clip);
+  debugLog('teaching-asset:carrier-source-fetch', { text: asset.text, requestText: asset.requestText, sourceCacheKey: sourceCacheKey.slice(0, 18), pronunciationTone: asset.pronunciationTone, coverage: clip.coverage || null });
+  return { clip, sourceCacheKey, fromCache: false };
+}
+
+async function fetchControlledCharAssetFromMiniMax(asset) {
+  const source = await ensureCarrierSourceCached(asset);
+  const clip = source.clip;
+  const target = Math.min(Math.max(0, asset.targetCharIndex ?? 0), Math.max(0, clip.charTime.length - 1));
   const ct = clip.charTime[target];
   if (!ct || ct[1] <= ct[0]) throw new Error('单字教学素材缺少目标字时间轴');
   const bytesPerMs = bytesPerMsFor(clip.sr, clip.ch, clip.bits);
@@ -1358,7 +1427,9 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
   const result = {
     ...sliced,
     controlledAsset: true,
+    sourceMode: asset.sourceMode,
     sourceText: asset.requestText,
+    sourceCacheKey: source.sourceCacheKey,
     targetCharIndex: target,
     targetTime: [Math.round(ct[0]), Math.round(ct[1])],
     normalizedText: asset.normalizedText,
@@ -1369,6 +1440,8 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
     text: asset.text,
     normalizedText: asset.normalizedText,
     requestText: asset.requestText,
+    sourceCacheKey: source.sourceCacheKey?.slice(0, 18),
+    sourceFromCache: source.fromCache,
     jyutping: asset.jyutping,
     targetCharIndex: target,
     targetTime: result.targetTime,
@@ -1381,7 +1454,7 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
 }
 
 async function fetchTeachingTtsFromMiniMax(asset) {
-  if (asset?.sourceMode === 'controlled_char_triplet') {
+  if (asset?.sourceMode === 'context_carrier') {
     return await fetchControlledCharAssetFromMiniMax(asset);
   }
   const resp = await fetchMiniMaxProxy('/tts', {
@@ -1413,14 +1486,14 @@ async function ensureTeachingAssetCached(asset, opts = {}) {
   const cacheKey = teachingAssetCacheKey(asset);
   let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
   if (blob) {
-    debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, cacheKey: cacheKey.slice(0, 18) });
+    debugLog('teaching-asset:cache-hit', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, cacheKey: cacheKey.slice(0, 18) });
     return { blob, cacheKey, fromCache: true };
   }
   if (!allowFetch) {
-    debugLog('teaching-asset:missing-cache', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationMode: asset.pronunciationMode, cacheKey: cacheKey.slice(0, 18), prewarm: teachingAssetPrewarmState });
+    debugLog('teaching-asset:missing-cache', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, cacheKey: cacheKey.slice(0, 18), prewarm: teachingAssetPrewarmState });
     return { blob: null, cacheKey, fromCache: false, missing: true };
   }
-  debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
+  debugLog('teaching-asset:fetch', { type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
   blob = await fetchTeachingTtsFromMiniMax(asset);
   if (cacheAvailable) await ttsCache.set(cacheKey, blob);
   return { blob, cacheKey, fromCache: false };
@@ -1439,9 +1512,9 @@ async function playTeachingAssetForWord(w, rate, token, context = {}, opts = {})
     }
     if (!result?.blob || !isPlaybackCurrent(token)) return false;
     const route = asset.type === 'char' ? 'char-audio' : 'word-audio';
-    debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
+    debugLog('teaching-asset:play', { route, type: asset.type, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, fromCache: result.fromCache, cacheKey: result.cacheKey.slice(0, 18), token });
     statusBar.textContent = `🔊: "${asset.text}" (${asset.type === 'char' ? '单字教学' : '词组教学'})`;
-    return await playAudioBlob(result.blob, rate, token, { route, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, pronunciationReason: asset.pronunciationReason });
+    return await playAudioBlob(result.blob, rate, token, { route, text: asset.text, normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason });
   } catch (e) {
     debugLog('teaching-asset:error', { text: w.text, token, error: e.message });
     return false;
@@ -2241,7 +2314,7 @@ preprocessBtn.addEventListener('click', async () => {
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
     const spokenTotal = chunks.reduce((sum, c) => sum + charLen(c.text), 0);
-    const teachingAssetMode = { mode: 'queued-prewarm', charAudio: true, wordAudio: true, controlledCharAudio: true, clickFetch: false };
+    const teachingAssetMode = { mode: 'queued-prewarm', charAudio: true, wordAudio: true, charSource: 'context-carrier', sourceCache: true, clickFetch: false };
     debugLog('preprocess:mvp-teaching-assets', teachingAssetMode);
     debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, teachingAssetMode, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
     renderDebugPanel();
