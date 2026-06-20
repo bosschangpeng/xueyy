@@ -353,7 +353,7 @@ function isPlaybackCurrent(token) {
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
 const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_full_v2';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_full_v3';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
@@ -566,6 +566,17 @@ function teachingAssetSourceCacheKey(asset) {
     asset.model,
     asset.speed,
     asset.format
+  ].join('|'));
+}
+
+function preprocessChunkCacheKey(text) {
+  return 'pre_' + hashText([
+    ALIGN_SCHEMA_VERSION,
+    minimaxVoice,
+    'preprocess-v1',
+    'speech-2.8-hd',
+    '0.85',
+    text
   ].join('|'));
 }
 
@@ -1336,6 +1347,60 @@ function teachingAssetForWord(w, context = {}) {
   };
 }
 
+function activeSpeechBoundsMs(source, opts = {}) {
+  const pcm = source?.pcm || source?.p;
+  const sr = source?.sr || 32000;
+  const ch = source?.ch || 1;
+  const bits = source?.bits || 16;
+  if (!pcm || bits !== 16) return null;
+  const bytesPerMs = bytesPerMsFor(sr, ch, bits);
+  const durationMs = pcm.length / bytesPerMs;
+  const windowMs = opts.windowMs || 22;
+  const stepMs = opts.stepMs || 10;
+  const samples = [];
+  for (let ms = 0; ms <= durationMs; ms += stepMs) {
+    const v = pcmMeanAbs16(pcm, sr, ch, bits, ms, windowMs);
+    if (v != null) samples.push({ ms, v });
+  }
+  if (!samples.length) return null;
+  const max = Math.max(...samples.map(x => x.v));
+  const threshold = Math.max(60, max * 0.055);
+  const active = samples.filter(x => x.v >= threshold);
+  if (!active.length) return { startMs: 0, endMs: durationMs, max, threshold, fallback: true };
+  const startMs = Math.max(0, active[0].ms - windowMs);
+  const endMs = Math.min(durationMs, active[active.length - 1].ms + windowMs);
+  if (endMs - startMs < 120) return { startMs: 0, endMs: durationMs, max, threshold, fallback: true };
+  return { startMs, endMs, max, threshold, fallback: false };
+}
+
+function carrierTargetSliceWindow(clip, asset, target, durationMs) {
+  const chars = textChars(asset.requestText || asset.normalizedText || '');
+  const count = Math.max(1, chars.length || 1);
+  const active = activeSpeechBoundsMs(clip) || { startMs: 0, endMs: durationMs, fallback: true };
+  const activeDur = Math.max(1, active.endMs - active.startMs);
+  const safeTarget = Math.min(Math.max(0, target), count - 1);
+  const rawStart = active.startMs + (safeTarget / count) * activeDur;
+  const rawEnd = active.startMs + ((safeTarget + 1) / count) * activeDur;
+  const guardStartMs = safeTarget > 0
+    ? active.startMs + Math.max(0, safeTarget - 0.2) / count * activeDur
+    : active.startMs;
+  const guardEndMs = safeTarget < count - 1
+    ? active.startMs + Math.min(count, safeTarget + 1.2) / count * activeDur
+    : active.endMs;
+  return {
+    startMs: Math.max(active.startMs, rawStart - 70),
+    endMs: Math.min(active.endMs, rawEnd + 110),
+    guardStartMs,
+    guardEndMs,
+    active,
+    rawStart,
+    rawEnd,
+    count,
+    target: safeTarget,
+    minMs: Math.max(320, Math.min(520, activeDur / count * 0.78))
+  };
+}
+
 function buildPcmSliceData(source, startMs, endMs, opts = {}) {
   const pcm = source?.pcm || source?.p;
   const sr = source?.sr || 32000;
@@ -1416,13 +1481,9 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
   if (!ct || ct[1] <= ct[0]) throw new Error('单字教学素材缺少目标字时间轴');
   const bytesPerMs = bytesPerMsFor(clip.sr, clip.ch, clip.bits);
   const durationMs = clip.p.length / bytesPerMs;
-  const prevEnd = clip.charTime[target - 1]?.[1];
-  const nextStart = clip.charTime[target + 1]?.[0];
-  const guardStartMs = Number.isFinite(prevEnd) ? Math.max(0, prevEnd - 15) : 0;
-  const guardEndMs = Number.isFinite(nextStart) ? Math.min(durationMs, nextStart + 18) : durationMs;
-  const startMs = Math.max(guardStartMs, ct[0] - 45);
-  const endMs = Math.min(guardEndMs, ct[1] + 75);
-  const sliced = buildPcmSliceData(clip, startMs, endMs, { guardStartMs, guardEndMs, minMs: 280 });
+  const sliceWindow = carrierTargetSliceWindow(clip, asset, target, durationMs);
+  const { startMs, endMs, guardStartMs, guardEndMs } = sliceWindow;
+  const sliced = buildPcmSliceData(clip, startMs, endMs, { guardStartMs, guardEndMs, minMs: sliceWindow.minMs });
   if (!sliced) throw new Error('单字教学素材裁切失败');
   const result = {
     ...sliced,
@@ -1432,6 +1493,7 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
     sourceCacheKey: source.sourceCacheKey,
     targetCharIndex: target,
     targetTime: [Math.round(ct[0]), Math.round(ct[1])],
+    sliceStrategy: 'energy-ratio',
     normalizedText: asset.normalizedText,
     jyutping: asset.jyutping,
     pronunciationMode: asset.pronunciationMode,
@@ -1447,6 +1509,8 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
     targetTime: result.targetTime,
     guardStartMs: Math.round(guardStartMs),
     guardEndMs: Math.round(guardEndMs),
+    sliceStrategy: 'energy-ratio',
+    sliceWindow: { target: sliceWindow.target, count: sliceWindow.count, rawStart: Math.round(sliceWindow.rawStart), rawEnd: Math.round(sliceWindow.rawEnd), activeStartMs: Math.round(sliceWindow.active.startMs), activeEndMs: Math.round(sliceWindow.active.endMs), activeFallback: !!sliceWindow.active.fallback, minMs: Math.round(sliceWindow.minMs) },
     trim: result.trim,
     coverage: clip.coverage || null
   });
@@ -1602,6 +1666,33 @@ async function prewarmTeachingAssets(reason = 'preprocess') {
 function scheduleTeachingAssetPrewarm(reason = 'preprocess') {
   if (!onlineTtsEnabled || !cacheAvailable) return;
   setTimeout(() => { prewarmTeachingAssets(reason).catch(e => debugLog('teaching-prewarm:error', { reason, error: e.message })); }, 0);
+}
+
+async function fetchPreprocessChunk(chunk, label) {
+  const cacheKey = preprocessChunkCacheKey(chunk);
+  if (cacheAvailable) {
+    const cached = await ttsCache.get(cacheKey);
+    if (cached?.audio_hex && cached?.char_time && cached?.text === chunk && cached?.alignVersion === ALIGN_SCHEMA_VERSION) {
+      debugLog('preprocess:chunk-cache-hit', { label, text: compactPreview(chunk, 48), cacheKey: cacheKey.slice(0, 18), textLength: charLen(chunk) });
+      return { pd: cached, fromCache: true, cacheKey };
+    }
+    if (cached) await ttsCache.delete(cacheKey);
+  }
+  const resp = await fetchMiniMaxProxy('/preprocess', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: chunk, voice: minimaxVoice }),
+  }, label);
+  if (!resp.ok) {
+    let msg = '预处理失败: ' + resp.status;
+    try { const j = await resp.json(); msg = j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  const pd = await resp.json();
+  if (!pd.char_time || !pd.audio_hex) throw new Error(label + ' 数据无效');
+  const cachedPd = { ...pd, text: pd.text || chunk, alignVersion: ALIGN_SCHEMA_VERSION };
+  if (cacheAvailable) await ttsCache.set(cacheKey, cachedPd);
+  return { pd: cachedPd, fromCache: false, cacheKey };
 }
 
 function parsePreprocessAudio(pd) {
@@ -2205,18 +2296,7 @@ preprocessBtn.addEventListener('click', async () => {
       statusBar.textContent = `⚡ 预处理第 ${ci+1}/${chunks.length} 批 (${chunk.length}字)...`;
       preprocessFill.style.width = pct + '%';
 
-      const resp = await fetchMiniMaxProxy('/preprocess', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: chunk, voice: minimaxVoice }),
-      }, `preprocess-main-${ci + 1}/${chunks.length}`);
-      if (!resp.ok) {
-        let msg = '预处理失败: ' + resp.status;
-        try { const j = await resp.json(); msg = j.error || msg; } catch {}
-        throw new Error(msg);
-      }
-      const pd = await resp.json();
-      if (!pd.char_time || !pd.audio_hex) throw new Error('第 ' + (ci+1) + ' 批数据无效');
+      const { pd, fromCache: chunkFromCache, cacheKey: chunkCacheKey } = await fetchPreprocessChunk(chunk, `preprocess-main-${ci + 1}/${chunks.length}`);
 
       sr = pd.sr || 32000; ch = pd.ch || 1; bits = pd.bits || 16;
       const hex = pd.audio_hex;
@@ -2287,7 +2367,9 @@ preprocessBtn.addEventListener('click', async () => {
         total: pd.coverage?.total ?? ct.length,
         sources: sourceCount,
         firstMissing,
-        subtitleDebug: pd.subtitle_debug || []
+        subtitleDebug: pd.subtitle_debug || [],
+        fromCache: chunkFromCache,
+        chunkCacheKey: chunkCacheKey.slice(0, 18)
       };
       chunkReports.push(report);
       const { subtitleDebug, ...chunkEvent } = report;

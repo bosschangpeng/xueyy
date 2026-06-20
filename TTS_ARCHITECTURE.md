@@ -152,8 +152,8 @@ interface TtsQaResult {
 第一阶段只验证新音频模型是否成立：
 
 1. 保留现有整句预处理，用于句子播放。
-2. 新增独立 `char_audio` / `word_audio`：词组用 `pronunciation_dict`，单字用上下文载体生成并裁出目标字，同一个载体源音频全局缓存复用，调试日志记录 `pronunciationMode`、`carrierReason` 和队列状态。
-3. 本地 IndexedDB 用 hash 缓存教学音频。预处理完成后启动前端队列预热必要字词资产，点击不负责插队生成。
+2. 新增独立 `char_audio` / `word_audio`：词组用 `pronunciation_dict`，单字用上下文载体生成并裁出目标字，同一个载体源音频全局缓存复用，单字切片使用能量边界和载体比例，调试日志记录 `pronunciationMode`、`carrierReason`、`sliceStrategy` 和队列状态。
+3. 本地 IndexedDB 用 hash 缓存教学音频。预处理完成后启动前端队列预热必要字词资产，点击不负责插队生成。歌词重复句子用 chunk 级预处理缓存复用，避免重复请求 API。
 4. 字/词点击优先播放独立教学音频。
 5. 只有教学音频失败时，才用整句时间轴区间兜底。
 6. 在线 TTS 关闭时，离线 TTS 基础功能保持原逻辑。
