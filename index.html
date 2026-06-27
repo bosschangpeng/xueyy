@@ -131,13 +131,13 @@ body.debug-mode .segment.dbg-unknown{outline:2px dotted rgba(127,140,141,.8);out
       <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
       <label id="onlineTtsWrap" style="cursor:pointer;user-select:none" title="开启后使用在线高精度粤语发音"><input type="checkbox" id="onlineTtsToggle"> 在线TTS</label>
       <label id="isolatedCharFallbackWrap" style="cursor:pointer;user-select:none;display:none" title="预处理模式下允许单字脱离上下文在线兜底，可能影响多音字"><input type="checkbox" id="isolatedCharFallbackToggle"> 孤字兜底</label>
-      <label id="mxVoiceWrap" style="display:none" title="MiniMax在线语音">☁️ <select id="mxVoiceSelect"></select></label>
+      <label id="mxVoiceWrap" style="display:none" title="CosyVoice 在线语音">☁️ <select id="mxVoiceSelect"></select></label>
     </div>
     <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
       <span id="preprocessWarn" style="font-size:.75rem;color:#e67e22;margin-right:8px">💡 建议预处理</span>
       <div class="preprocess-bar" id="preprocessBar"><div class="fill" id="preprocessFill"></div></div>
       <span id="preprocessStat" style="font-size:.72rem;color:var(--text-light);margin-left:8px;white-space:nowrap">缓存: <span id="cacheCount">0</span>项 <button id="clearCacheBtn" class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.7rem;margin-left:6px;line-height:1.3">清缓存</button></span>
-      <button id="debugTtsBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:6px;line-height:1.3" title="测试Worker到MiniMax连通性">🔧</button>
+      <button id="debugTtsBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:6px;line-height:1.3" title="测试Worker到CosyVoice连通性">🔧</button>
       <button id="debugCharTimeBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:2px;line-height:1.3" title="调试charTime对齐">🎯</button>
     </div>
   </div>
@@ -352,12 +352,13 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_v18_teaching_newline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_context_v1';
+const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v1_no_preprocess';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v1';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
-const MINIMAX_CHAR_AUDIO_ENABLED = false;
-const TEACHING_ASSET_MODEL = 'speech-2.8-turbo';
+const ONLINE_CHAR_AUDIO_ENABLED = true;
+const ONLINE_CHAR_AUDIO_MODE = 'direct';
+const TEACHING_ASSET_MODEL = 'cosyvoice-v3-flash';
 const TEACHING_ASSET_FORMAT = 'wav';
 
 function textChars(text) {
@@ -527,22 +528,22 @@ function ensureSongDataCurrent(reason) {
 }
 
 function clipCacheKey(text) {
-  return 'clip_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + text);
+  return 'clip_' + hashText(ALIGN_SCHEMA_VERSION + '|' + ttsVoice + '|' + text);
 }
 
 function contextClipCacheKey(unit) {
-  return 'ctx_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.contextText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
+  return 'ctx_' + hashText(ALIGN_SCHEMA_VERSION + '|' + ttsVoice + '|' + unit.contextText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
 }
 
 function teachingClipCacheKey(unit) {
-  return 'teach_' + hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + unit.teachingText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
+  return 'teach_' + hashText(ALIGN_SCHEMA_VERSION + '|' + ttsVoice + '|' + unit.teachingText + '|' + unit.targetStart + '|' + unit.targetEnd + '|' + unit.text);
 }
 
 function teachingAssetCacheKey(asset) {
   return 'asset_' + hashText([
     TEACHING_ASSET_SCHEMA_VERSION,
     asset.type,
-    minimaxVoice,
+    ttsVoice,
     asset.normalizedText,
     asset.requestText || '',
     asset.jyutping,
@@ -560,7 +561,7 @@ function teachingAssetCacheKey(asset) {
 function teachingAssetSourceCacheKey(asset) {
   return 'asset_src_' + hashText([
     TEACHING_ASSET_SCHEMA_VERSION,
-    minimaxVoice,
+    ttsVoice,
     asset.sourceMode || '',
     asset.requestText || '',
     asset.pronunciationTone || '',
@@ -573,9 +574,9 @@ function teachingAssetSourceCacheKey(asset) {
 function preprocessChunkCacheKey(text) {
   return 'pre_' + hashText([
     ALIGN_SCHEMA_VERSION,
-    minimaxVoice,
+    ttsVoice,
     'preprocess-v1',
-    'speech-2.8-hd',
+    'cosyvoice-v3-flash',
     '0.85',
     text
   ].join('|'));
@@ -842,6 +843,15 @@ async function speak(text, rate = 1) {
   stopSpeak();
   const parts = chunkText(text);
   statusBar.textContent = `🔊 ${parts.length}段: ${parts.join(' | ')}`;
+  if (onlineTtsEnabled) {
+    for (let i = 0; i < parts.length; i++) {
+      const ok = await speakOneCached(parts[i], rate, null);
+      if (!ok) break;
+      if (i < parts.length - 1) await new Promise(r => setTimeout(r, 180));
+    }
+    statusBar.textContent = `✅ "${text}"`;
+    return;
+  }
   if (!('speechSynthesis' in window)) return speakOnline(text, rate);
 
   let voice = await resolveVoice();
@@ -926,18 +936,21 @@ function stopSpeak() {
   if (currentAudioCtx && currentAudioCtx.state === 'running') currentAudioCtx.suspend();
 }
 
-// ── MiniMax 在线 TTS + IndexedDB 缓存 ──
+// ── CosyVoice 在线 TTS + IndexedDB 缓存 ──
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
-let minimaxVoice = localStorage.getItem('mxVoice') || 'Cantonese_GentleLady';
+let ttsVoice = localStorage.getItem('mxVoice') || 'longanhuan_v3';
 let isolatedCharFallbackEnabled = false;
 localStorage.removeItem('isolatedCharFallback');
 let currentAudio = null;
 
 const MX_VOICES = [
-  { id: 'Cantonese_GentleLady', label: '粤语女声 ♀' },
-  { id: 'Cantonese_podacast_host_1', label: '粤语播客 ♂' },
+  { id: 'longanhuan_v3', label: 'Cosy 广东话 ♀' },
 ];
+if (!MX_VOICES.some(v => v.id === ttsVoice)) {
+  ttsVoice = MX_VOICES[0].id;
+  localStorage.setItem('mxVoice', ttsVoice);
+}
 
 const mxVoiceSelect = document.getElementById('mxVoiceSelect');
 const mxVoiceWrap = document.getElementById('mxVoiceWrap');
@@ -946,14 +959,14 @@ function initMxVoice() {
   for (const v of MX_VOICES) {
     const o = document.createElement('option');
     o.value = v.id; o.textContent = v.label;
-    if (v.id === minimaxVoice) o.selected = true;
+    if (v.id === ttsVoice) o.selected = true;
     mxVoiceSelect.appendChild(o);
   }
 }
 initMxVoice();
 mxVoiceSelect.addEventListener('change', () => {
-  minimaxVoice = mxVoiceSelect.value;
-  localStorage.setItem('mxVoice', minimaxVoice);
+  ttsVoice = mxVoiceSelect.value;
+  localStorage.setItem('mxVoice', ttsVoice);
 });
 
 const onlineTtsToggle = document.getElementById('onlineTtsToggle');
@@ -972,8 +985,8 @@ isolatedCharFallbackToggle.checked = false;
 if (onlineTtsEnabled) {
   mxVoiceWrap.style.display = '';
   isolatedCharFallbackWrap.style.display = 'none';
-  document.getElementById('preprocessRow').style.display = '';
-  document.getElementById('preprocessBtn').style.display = '';
+  document.getElementById('preprocessRow').style.display = 'none';
+  document.getElementById('preprocessBtn').style.display = 'none';
   updateCacheStat();
 } else {
   mxVoiceWrap.style.display = 'none';
@@ -994,10 +1007,10 @@ onlineTtsToggle.addEventListener('change', () => {
   if (onlineTtsEnabled) {
     mxVoiceWrap.style.display = '';
     isolatedCharFallbackWrap.style.display = 'none';
-    document.getElementById('preprocessRow').style.display = '';
-    document.getElementById('preprocessBtn').style.display = '';
+    document.getElementById('preprocessRow').style.display = 'none';
+    document.getElementById('preprocessBtn').style.display = 'none';
     initMxVoice(); updateCacheStat();
-    statusBar.textContent = '☁️ 在线TTS模式';
+    statusBar.textContent = '☁️ CosyVoice在线TTS模式';
   } else {
     mxVoiceWrap.style.display = 'none';
     isolatedCharFallbackWrap.style.display = 'none';
@@ -1101,12 +1114,12 @@ class TtsCache {
 }
 const ttsCache = new TtsCache();
 
-const MINIMAX_RPM_LIMIT = 20;
-const MINIMAX_REQUEST_INTERVAL_MS = Math.ceil(60000 / MINIMAX_RPM_LIMIT) + 250;
-const MINIMAX_RATE_LIMIT_RETRY_MS = 65000;
-const MINIMAX_RATE_LIMIT_RETRIES = 3;
-let minimaxNextRequestAt = 0;
-let minimaxQueue = Promise.resolve();
+const TTS_RPM_LIMIT = 60;
+const TTS_REQUEST_INTERVAL_MS = Math.ceil(60000 / TTS_RPM_LIMIT) + 100;
+const TTS_RATE_LIMIT_RETRY_MS = 65000;
+const TTS_RATE_LIMIT_RETRIES = 3;
+let ttsNextRequestAt = 0;
+let ttsQueue = Promise.resolve();
 let teachingAssetPrewarmSession = 0;
 let teachingAssetPrewarmState = {
   active: false,
@@ -1132,29 +1145,29 @@ function parseRetryAfterMs(resp) {
     const dateMs = Date.parse(raw);
     if (Number.isFinite(dateMs)) return Math.max(1000, dateMs - Date.now());
   }
-  return MINIMAX_RATE_LIMIT_RETRY_MS;
+  return TTS_RATE_LIMIT_RETRY_MS;
 }
 
-async function waitForMiniMaxSlot(label = 'minimax') {
-  const previous = minimaxQueue.catch(() => {});
+async function waitForTtsSlot(label = 'tts') {
+  const previous = ttsQueue.catch(() => {});
   let release;
-  minimaxQueue = new Promise(resolve => { release = resolve; });
+  ttsQueue = new Promise(resolve => { release = resolve; });
   await previous;
   try {
-    const waitMs = Math.max(0, minimaxNextRequestAt - Date.now());
+    const waitMs = Math.max(0, ttsNextRequestAt - Date.now());
     if (waitMs > 0) {
-      debugLog('minimax:throttle-wait', { label, waitMs, rpm: MINIMAX_RPM_LIMIT });
-      statusBar.textContent = `⏳ MiniMax限速等待 ${Math.ceil(waitMs / 1000)}秒...`;
+      debugLog('tts:throttle-wait', { label, waitMs, rpm: TTS_RPM_LIMIT });
+      statusBar.textContent = `⏳ 在线TTS限速等待 ${Math.ceil(waitMs / 1000)}秒...`;
       await sleep(waitMs);
     }
-    minimaxNextRequestAt = Date.now() + MINIMAX_REQUEST_INTERVAL_MS;
-    debugLog('minimax:slot', { label, intervalMs: MINIMAX_REQUEST_INTERVAL_MS });
+    ttsNextRequestAt = Date.now() + TTS_REQUEST_INTERVAL_MS;
+    debugLog('tts:slot', { label, intervalMs: TTS_REQUEST_INTERVAL_MS });
   } finally {
     release();
   }
 }
 
-async function isMiniMaxRateLimitResponse(resp) {
+async function isTtsRateLimitResponse(resp) {
   if (resp.status === 429) return true;
   if (resp.status !== 500) return false;
   try {
@@ -1165,19 +1178,19 @@ async function isMiniMaxRateLimitResponse(resp) {
   }
 }
 
-async function fetchMiniMaxProxy(path, init, label = 'minimax') {
+async function fetchTtsProxy(path, init, label = 'tts') {
   for (let attempt = 0; ; attempt++) {
-    await waitForMiniMaxSlot(label);
+    await waitForTtsSlot(label);
     const startedAt = performance.now();
-    debugLog('minimax:request', { label, path, attempt });
+    debugLog('tts:request', { label, path, attempt });
     const resp = await fetch(path, init);
-    debugLog('minimax:response', { label, path, attempt, ok: resp.ok, status: resp.status, durationMs: Math.round(performance.now() - startedAt) });
+    debugLog('tts:response', { label, path, attempt, ok: resp.ok, status: resp.status, durationMs: Math.round(performance.now() - startedAt) });
 
-    if (attempt < MINIMAX_RATE_LIMIT_RETRIES && await isMiniMaxRateLimitResponse(resp)) {
+    if (attempt < TTS_RATE_LIMIT_RETRIES && await isTtsRateLimitResponse(resp)) {
       const waitMs = parseRetryAfterMs(resp);
-      minimaxNextRequestAt = Math.max(minimaxNextRequestAt, Date.now() + waitMs);
-      debugLog('minimax:rate-limit', { label, path, attempt, status: resp.status, retryAfterMs: waitMs });
-      statusBar.textContent = `⏳ MiniMax触发限速，${Math.ceil(waitMs / 1000)}秒后重试...`;
+      ttsNextRequestAt = Math.max(ttsNextRequestAt, Date.now() + waitMs);
+      debugLog('tts:rate-limit', { label, path, attempt, status: resp.status, retryAfterMs: waitMs });
+      statusBar.textContent = `⏳ 在线TTS触发限速，${Math.ceil(waitMs / 1000)}秒后重试...`;
       await sleep(waitMs);
       continue;
     }
@@ -1185,14 +1198,14 @@ async function fetchMiniMaxProxy(path, init, label = 'minimax') {
   }
 }
 
-async function fetchTtsFromMiniMax(text) {
-  const resp = await fetchMiniMaxProxy('/tts', {
+async function fetchTtsFromProvider(text) {
+  const resp = await fetchTtsProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: minimaxVoice, speed: 0.85 }),
+    body: JSON.stringify({ text, voice: ttsVoice, speed: 0.9, model: TEACHING_ASSET_MODEL, format: 'wav', sample_rate: 24000, instruction: '请用广东话表达。' }),
   }, 'tts-clip');
   if (!resp.ok) {
-    let msg = 'MiniMax TTS failed: ' + resp.status;
+    let msg = 'CosyVoice TTS failed: ' + resp.status;
     try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
@@ -1319,7 +1332,7 @@ function miniMaxTeachingText(text) {
 function teachingAssetForWord(w, context = {}) {
   if (!w || !w.text) return null;
   const type = charLen(w.text) <= 1 ? 'char' : 'word';
-  if (type === 'char' && !MINIMAX_CHAR_AUDIO_ENABLED) return null;
+  if (type === 'char' && !ONLINE_CHAR_AUDIO_ENABLED) return null;
   const normalizedText = compactTtsText(w.text);
   const override = contextualJyutpingOverride(w.text, context);
   const jyutping = override?.jyutping || jyutpingForTeachingText(normalizedText);
@@ -1332,7 +1345,7 @@ function teachingAssetForWord(w, context = {}) {
   let targetCharIndex = null;
 
   let carrierReason = '';
-  if (type === 'char' && normalizedText && syllables.length) {
+  if (type === 'char' && ONLINE_CHAR_AUDIO_MODE === 'context_carrier' && normalizedText && syllables.length) {
     const carrier = carrierSourceForChar(w, context, jyutping);
     requestText = carrier.text || normalizedText;
     const sourceJyutping = carrier.jyutping || jyutping;
@@ -1504,16 +1517,16 @@ async function ensureCarrierSourceCached(asset) {
     debugLog('teaching-asset:carrier-source-cache-hit', { text: asset.text, requestText: asset.requestText, sourceCacheKey: sourceCacheKey.slice(0, 18), pronunciationTone: asset.pronunciationTone });
     return { clip, sourceCacheKey, fromCache: true };
   }
-  const resp = await fetchMiniMaxProxy('/preprocess', {
+  const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text: asset.requestText,
-      voice: minimaxVoice,
+      voice: ttsVoice,
       speed: asset.speed,
       model: asset.model,
-      language_boost: 'Chinese,Yue',
-      pronunciation_dict: asset.pronunciationDict || undefined,
+      language_hints: ['zh'],
+      instruction: '请用广东话表达。',
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1528,7 +1541,7 @@ async function ensureCarrierSourceCached(asset) {
   return { clip, sourceCacheKey, fromCache: false };
 }
 
-async function fetchControlledCharAssetFromMiniMax(asset) {
+async function fetchControlledCharAssetFromProvider(asset) {
   const source = await ensureCarrierSourceCached(asset);
   const clip = source.clip;
   const target = Math.min(Math.max(0, asset.targetCharIndex ?? 0), Math.max(0, clip.charTime.length - 1));
@@ -1572,24 +1585,23 @@ async function fetchControlledCharAssetFromMiniMax(asset) {
   return result;
 }
 
-async function fetchTeachingTtsFromMiniMax(asset) {
+async function fetchTeachingTtsFromProvider(asset) {
   if (asset?.sourceMode === 'context_carrier') {
-    if (!MINIMAX_CHAR_AUDIO_ENABLED) throw new Error('MiniMax 单字切片路径已停用');
-    return await fetchControlledCharAssetFromMiniMax(asset);
+    if (!ONLINE_CHAR_AUDIO_ENABLED) throw new Error('在线单字切片路径已停用');
+    return await fetchControlledCharAssetFromProvider(asset);
   }
-  const resp = await fetchMiniMaxProxy('/tts', {
+  const resp = await fetchTtsProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text: asset.requestText || asset.normalizedText,
-      voice: minimaxVoice,
+      voice: ttsVoice,
       speed: asset.speed,
       model: asset.model,
       format: asset.format,
-      language_boost: 'Chinese,Yue',
-      output_format: 'hex',
-      aigc_watermark: false,
-      pronunciation_dict: asset.pronunciationDict || undefined,
+      sample_rate: 24000,
+      instruction: '请用广东话表达。',
+      language_hints: ['zh'],
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1614,7 +1626,7 @@ async function ensureTeachingAssetCached(asset, opts = {}) {
     return { blob: null, cacheKey, fromCache: false, missing: true };
   }
   debugLog('teaching-asset:fetch', { type: asset.type, playbackKind: asset.playbackKind || '', text: asset.text, displayText: asset.displayText || '', targetText: asset.targetText || '', normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, targetJyutping: asset.targetJyutping || '', pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
-  blob = await fetchTeachingTtsFromMiniMax(asset);
+  blob = await fetchTeachingTtsFromProvider(asset);
   if (cacheAvailable) await ttsCache.set(cacheKey, blob);
   return { blob, cacheKey, fromCache: false };
 }
@@ -1675,7 +1687,7 @@ function collectTeachingAssetsForCurrentText() {
       const w = s.words[wi];
       if (!w?.text || w.type === 'punct' || w.type === 'space') continue;
       const isCharTile = charLen(w.text) <= 1;
-      const asset = isCharTile && !MINIMAX_CHAR_AUDIO_ENABLED
+      const asset = isCharTile && !ONLINE_CHAR_AUDIO_ENABLED
         ? teachingContextAssetForChar(w, { sentence: s, si, wi })
         : teachingAssetForWord(w, { sentence: s, si, wi });
       if (!asset) continue;
@@ -1761,10 +1773,10 @@ async function fetchPreprocessChunk(chunk, label) {
     }
     if (cached) await ttsCache.delete(cacheKey);
   }
-  const resp = await fetchMiniMaxProxy('/preprocess', {
+  const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: chunk, voice: minimaxVoice }),
+    body: JSON.stringify({ text: chunk, voice: ttsVoice }),
   }, label);
   if (!resp.ok) {
     let msg = '预处理失败: ' + resp.status;
@@ -1801,10 +1813,10 @@ function parsePreprocessAudio(pd) {
 }
 
 async function fetchPreprocessClip(text) {
-  const resp = await fetchMiniMaxProxy('/preprocess', {
+  const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: minimaxVoice }),
+    body: JSON.stringify({ text, voice: ttsVoice }),
   }, 'preprocess-clip');
   if (!resp.ok) {
     let msg = '预处理clip失败: ' + resp.status;
@@ -1904,14 +1916,14 @@ async function speakOneCached(text, rate, token) {
   }
   try {
     debugLog('clip:fetch', { route: 'independent-clip', text, token });
-    const blob = await fetchTtsFromMiniMax(text);
+    const blob = await fetchTtsFromProvider(text);
     if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     if (!isPlaybackCurrent(token)) return false;
     statusBar.textContent = `🔊: "${text}" (在线)`;
     await playAudioBlob(blob, rate, token, { route: 'independent-clip-online', text });
     return true;
   } catch (e) {
-    statusBar.textContent = '⚠ MiniMax 不可用，回退系统语音';
+    statusBar.textContent = '⚠ CosyVoice 不可用，回退系统语音';
     debugLog('fallback:offline-system', { route: 'independent-clip', text, token, reason: e.message });
     const voice = await resolveVoice();
     if (!voice) return false;
@@ -1928,7 +1940,7 @@ async function playSegmentClip(text, rate, token) {
     let blob = cacheAvailable ? await ttsCache.get(cacheKey) : null;
     debugLog(blob ? 'clip:cache-hit' : 'clip:cache-miss', { route: 'exact-clip', text, token, cacheKey: cacheKey.slice(0, 18) });
     if (!blob) {
-      blob = await fetchTtsFromMiniMax(text);
+      blob = await fetchTtsFromProvider(text);
       if (cacheAvailable) await ttsCache.set(cacheKey, blob);
     }
     if (!isPlaybackCurrent(token)) return false;
@@ -2257,7 +2269,7 @@ async function ensureSegmentClipCached(text) {
   const key = clipCacheKey(text);
   const cached = await ttsCache.get(key);
   if (cached) return true;
-  const blob = await fetchTtsFromMiniMax(text);
+  const blob = await fetchTtsFromProvider(text);
   await ttsCache.set(key, blob);
   return true;
 }
@@ -2297,14 +2309,14 @@ preprocessBtn.addEventListener('click', async () => {
   if (!text) { showToast('请先输入文本'); return; }
   renderSentences(text);
   const alignmentSignature = currentAlignmentSignature();
-  debugLog('preprocess:start', { textLength: totalChars, sentences: currentSentences.length, voice: minimaxVoice, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature });
+  debugLog('preprocess:start', { textLength: totalChars, sentences: currentSentences.length, voice: ttsVoice, alignVersion: ALIGN_SCHEMA_VERSION, alignmentSignature });
 
   preprocessing = true;
   preprocessBar.style.display = '';
   preprocessFill.style.width = '0%';
   preprocessBtn.disabled = true;
 
-  const hkey = hashText(ALIGN_SCHEMA_VERSION + '|' + minimaxVoice + '|' + alignmentSignature + '|' + text);
+  const hkey = hashText(ALIGN_SCHEMA_VERSION + '|' + ttsVoice + '|' + alignmentSignature + '|' + text);
 
   // 检查 IndexedDB 缓存
   if (cacheAvailable) {
@@ -2509,11 +2521,11 @@ document.getElementById('clearCacheBtn').addEventListener('click', async () => {
   showToast('缓存已清除，预处理数据已失效');
 });
 
-// 调试 Worker → MiniMax 连通性
+// 调试 Worker → CosyVoice 连通性
 document.getElementById('debugTtsBtn').addEventListener('click', async () => {
   showToast('测试中...');
   try {
-    const resp = await fetchMiniMaxProxy('/debug-tts', { method: 'GET' }, 'debug-tts');
+    const resp = await fetchTtsProxy('/debug-tts', { method: 'GET' }, 'debug-tts');
     const txt = await resp.text();
     debugLog('worker:debug-tts', { ok: resp.ok, text: txt.slice(0, 900) });
     showToast(txt);
@@ -2920,7 +2932,7 @@ function songDebugSummary() {
     exists: true,
     alignVersion: songData.alignVersion || '',
     alignmentSignature: songData.alignmentSignature || '',
-    voice: minimaxVoice,
+    voice: ttsVoice,
     textLength: total,
     spokenTextLength,
     inputLength: charLen(inputEl.value || ''),
@@ -2948,11 +2960,12 @@ function buildDebugReport() {
     settings: {
       onlineTtsEnabled,
       isolatedCharFallbackEnabled,
-      minimaxVoice,
+      ttsProvider: 'cosyvoice',
+      ttsVoice,
       alignVersion: ALIGN_SCHEMA_VERSION,
       teachingAssetVersion: TEACHING_ASSET_SCHEMA_VERSION,
-      minimaxCharAudioEnabled: MINIMAX_CHAR_AUDIO_ENABLED,
-      charPlaybackPolicy: MINIMAX_CHAR_AUDIO_ENABLED ? 'minimax-char-audio' : 'char-context-audio',
+      onlineCharAudioEnabled: ONLINE_CHAR_AUDIO_ENABLED,
+      charPlaybackPolicy: ONLINE_CHAR_AUDIO_ENABLED ? `provider-char-audio:${ONLINE_CHAR_AUDIO_MODE}` : 'char-context-audio',
       rate: parseFloat(speedRange.value),
       volume: parseFloat(volumeRange.value),
       cacheAvailable,
@@ -3291,11 +3304,20 @@ async function playWord(si, wi) {
   if (groups[si]) groups[si].classList.add('active');
   const tiles = groups[si]?.querySelectorAll('.segment');
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
+  if (onlineTtsEnabled && !songData) {
+    const rate = parseFloat(speedRange.value);
+    const wLen = charLen(w.text);
+    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
+    if (assetOk) return;
+  }
+
   if (onlineTtsEnabled && songData) {
     if (!ensureSongDataCurrent('play-word')) return;
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
-    if (wLen <= 1 && !MINIMAX_CHAR_AUDIO_ENABLED) {
+    if (wLen <= 1 && !ONLINE_CHAR_AUDIO_ENABLED) {
       const contextOk = await playTeachingContextForChar(w, rate, token, { sentence: s, si, wi }, { allowFetch: false });
       if (!isPlaybackCurrent(token)) return;
       debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token });

@@ -133,3 +133,25 @@ function renderSentences(text) {
 - `char_audio`：仍是完整架构目标，但 MiniMax 已证明不适合作为当前实现路径；后续需要专用单字 TTS、录音素材库或人工复核素材。
 
 重要原则：不要再把 MiniMax subtitle 或载体切片当成干净单字音频来源。单字若走 MiniMax，只能作为完整上下文播放并在调试里标记 `char-context-audio`。在线 TTS 关闭时，离线 TTS 路径保持原逻辑，不依赖预处理教学资产。
+
+## 2026-06-27 CosyVoice 迁移
+
+当前线上在线 TTS 已从 MiniMax 迁移到阿里云百炼 CosyVoice HTTP 非实时语音合成。旧 MiniMax 预处理、subtitle 对齐、整句裁字、载体裁字不再作为当前路线。
+
+Worker 环境变量：
+
+- `DASHSCOPE_API_KEY`：必填，阿里云百炼 DashScope API Key。
+- `COSYVOICE_MODEL`：可选，默认 `cosyvoice-v3-flash`。
+- `COSYVOICE_VOICE`：可选，默认 `longanhuan_v3`。
+- `COSYVOICE_INSTRUCTION`：可选，默认 `请用广东话表达。`。
+
+当前播放规则：
+
+- `/tts`：调用 CosyVoice，返回音频二进制。
+- `/debug-tts`：测试 CosyVoice 连通性。
+- `/preprocess`：停用，返回 501；前端已隐藏预处理按钮。
+- 句子/全文：在线开关开启时优先走 CosyVoice。
+- 词组：直接生成词组音频。
+- 单字：直接用 CosyVoice 生成独立单字音频；上下文载体仅保留为备用策略。
+
+部署前必须确认 Cloudflare Pages/Worker 已配置 `DASHSCOPE_API_KEY`，否则在线 TTS 会返回 `CosyVoice not configured` 并回退系统语音。

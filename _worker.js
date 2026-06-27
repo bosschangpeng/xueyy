@@ -1,47 +1,48 @@
-// 粤语学习助手 — 密码 + 邀请码双验证 + MiniMax TTS代理
+// 粤语学习助手 — 密码 + 邀请码双验证 + CosyVoice TTS代理
 // ACCESS_PWD = 管理员密码（永久有效，不消耗）
 // ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
-// MINIMAX_API_KEY = MiniMax API Key
-// MINIMAX_GROUP_ID = MiniMax Group ID
+// DASHSCOPE_API_KEY = 阿里云百炼 DashScope API Key
+// COSYVOICE_MODEL = 可选，默认 cosyvoice-v3-flash
+// COSYVOICE_VOICE = 可选，默认 longanhuan_v3
 // KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
 const COOKIE_DAYS = 3650;
-const MINIMAX_RPM_LIMIT = 20;
-const MINIMAX_REQUEST_INTERVAL_MS = Math.ceil(60000 / MINIMAX_RPM_LIMIT) + 250;
-const MINIMAX_RATE_LIMIT_RETRY_MS = 65000;
-let minimaxNextRequestAt = 0;
-let minimaxQueue = Promise.resolve();
+const TTS_RPM_LIMIT = 60;
+const TTS_REQUEST_INTERVAL_MS = Math.ceil(60000 / TTS_RPM_LIMIT) + 100;
+const TTS_RATE_LIMIT_RETRY_MS = 65000;
+let ttsNextRequestAt = 0;
+let ttsQueue = Promise.resolve();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function waitForMiniMaxSlot(label = 'minimax') {
-  const previous = minimaxQueue.catch(() => {});
+async function waitForTtsSlot(label = 'tts') {
+  const previous = ttsQueue.catch(() => {});
   let release;
-  minimaxQueue = new Promise(resolve => { release = resolve; });
+  ttsQueue = new Promise(resolve => { release = resolve; });
   await previous;
   try {
-    const waitMs = Math.max(0, minimaxNextRequestAt - Date.now());
+    const waitMs = Math.max(0, ttsNextRequestAt - Date.now());
     if (waitMs > 0) await sleep(waitMs);
-    minimaxNextRequestAt = Date.now() + MINIMAX_REQUEST_INTERVAL_MS;
+    ttsNextRequestAt = Date.now() + TTS_REQUEST_INTERVAL_MS;
   } finally {
     release();
   }
 }
 
-function miniMaxError(message, status = 500, retryAfter = '') {
+function ttsProviderError(message, status = 500, retryAfter = '') {
   const err = new Error(message);
   err.status = status;
   if (retryAfter) err.retryAfter = retryAfter;
   return err;
 }
 
-function miniMaxJsonError(e) {
+function ttsJsonError(e) {
   const status = Number(e.status) || 500;
   const headers = {'Content-Type':'application/json'};
-  if (status === 429) headers['Retry-After'] = e.retryAfter || String(Math.ceil(MINIMAX_RATE_LIMIT_RETRY_MS / 1000));
+  if (status === 429) headers['Retry-After'] = e.retryAfter || String(Math.ceil(TTS_RATE_LIMIT_RETRY_MS / 1000));
   return new Response(JSON.stringify({error:e.message}), {status, headers});
 }
 
@@ -93,51 +94,62 @@ async function checkAuth(request, env) {
   return val === '1';
 }
 
-async function minimaxTts(env, body, opts = {}) {
-  const apiKey = env.MINIMAX_API_KEY || '';
-  const groupId = env.MINIMAX_GROUP_ID || '';
-  if (!apiKey || !groupId) {
-    throw new Error('MiniMax not configured');
-  }
-  await waitForMiniMaxSlot('minimaxTts');
-  const audioFormat = opts.format || body.format || 'mp3';
-  const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
+async function cosyVoiceTts(env, body, opts = {}) {
+  const apiKey = env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
+  if (!apiKey) throw new Error('CosyVoice not configured: missing DASHSCOPE_API_KEY');
+  await waitForTtsSlot('cosyVoiceTts');
+
+  const audioFormat = opts.format || body.format || 'wav';
+  const model = body.model || opts.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
+  const voice = body.voice || opts.voice || env.COSYVOICE_VOICE || 'longanhuan_v3';
+  const rate = Number(body.rate ?? body.speed ?? opts.rate ?? 1.0);
+  const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
+  const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
+
+  const input = {
+    text: body.text,
+    voice,
+    format: audioFormat,
+    sample_rate: sampleRate,
+    volume: Number(body.volume ?? opts.volume ?? 50),
+    rate: Number.isFinite(rate) ? Math.max(0.5, Math.min(2.0, rate)) : 1.0,
+    pitch: Number(body.pitch ?? opts.pitch ?? 1.0),
+    language_hints: body.language_hints || opts.language_hints || ['zh'],
+    enable_aigc_tag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
+  };
+  if (instruction) input.instruction = instruction;
+  if (body.hot_fix || opts.hot_fix) input.hot_fix = body.hot_fix || opts.hot_fix;
+  if (body.enable_ssml || opts.enable_ssml) input.enable_ssml = true;
+
+  const resp = await fetch('https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer', {
     method: 'POST',
-    headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},
-    body: JSON.stringify({
-      model: body.model || opts.model || 'speech-2.8-hd',
-      text: body.text,
-      stream: false,
-      pronunciation_dict: body.pronunciation_dict || opts.pronunciation_dict,
-      language_boost: body.language_boost || opts.language_boost || 'Chinese,Yue',
-      voice_setting: {voice_id: body.voice||'Cantonese_GentleLady', speed: body.speed||1.0, vol:1.0, pitch:0},
-      audio_setting: {sample_rate:32000, bitrate:128000, format: audioFormat, channel:1},
-      subtitle_enable: opts.subtitle_enable || body.subtitle_enable || false,
-      subtitle_type: opts.subtitle_type || body.subtitle_type,
-      output_format: body.output_format || opts.output_format || 'hex',
-      aigc_watermark: body.aigc_watermark ?? opts.aigc_watermark ?? false,
-    }),
+    headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input }),
   });
   if (!resp.ok) {
-    let msg = 'MiniMax API ' + resp.status;
+    let msg = 'CosyVoice API ' + resp.status;
     try {
       const errData = await resp.clone().json();
-      msg = errData.base_resp?.status_msg || errData.error || errData.message || msg;
+      msg = errData.message || errData.code || errData.error || msg;
     } catch {
-      try {
-        const txt = await resp.text();
-        if (txt) msg = msg + ': ' + txt.slice(0, 160);
-      } catch {}
+      try { const txt = await resp.text(); if (txt) msg = msg + ': ' + txt.slice(0, 200); } catch {}
     }
-    throw miniMaxError(msg, resp.status, resp.headers.get('Retry-After') || '');
+    throw ttsProviderError(msg, resp.status, resp.headers.get('Retry-After') || '');
   }
   const data = await resp.json();
-  if (data.base_resp?.status_code !== 0) {
-    const msg = data.base_resp?.status_msg || 'TTS error';
-    const status = /(^|\D)429(\D|$)|rate limit|too many requests|rpm/i.test(msg) ? 429 : 500;
-    throw miniMaxError(msg, status);
+  const audio = data.output?.audio || {};
+  let bytes = null;
+  if (audio.data) {
+    const bin = atob(audio.data);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } else if (audio.url) {
+    const ar = await fetch(audio.url);
+    if (!ar.ok) throw ttsProviderError('CosyVoice audio url fetch failed: ' + ar.status, ar.status);
+    bytes = new Uint8Array(await ar.arrayBuffer());
   }
-  return data;
+  if (!bytes || !bytes.length) throw ttsProviderError('CosyVoice returned empty audio', 500);
+  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice' };
 }
 
 function hexToBytes(hex) {
@@ -223,7 +235,7 @@ function projectCharTimeToOriginal(speechCharTime, mapToOriginal, originalLength
 }
 
 // ── 构建「修改后文本位置 → 原文位置」映射 ──
-// addSentencePauses 插入的 <#0.5#>/<#0.2#> 会让 MiniMax 字幕的 text_begin/text_end 偏移，
+// addSentencePauses 是旧字幕对齐流程遗留函数；CosyVoice HTTP 模式下不再使用字幕裁切。
 // 必须映射回原文位置，前端才能与 renderSentences 的 w.start/w.end 对齐。
 function buildTextMapping(originalText, modifiedText) {
   const mapping = new Array(modifiedText.length).fill(-1);
@@ -542,49 +554,9 @@ function summarizeSubtitle(subtitle) {
 
 // ── 预处理：直接合成当前句/片段，停顿由前端拼接真实静音 ──
 async function preprocessTts(env, body) {
-  const text = body.text || '';
-
-  const data = await minimaxTts(env, {
-    text,
-    voice: body.voice,
-    speed: body.speed || 0.85,
-    model: body.model,
-    language_boost: body.language_boost,
-    pronunciation_dict: body.pronunciation_dict,
-  }, {
-    format: 'wav', subtitle_enable: true, subtitle_type: 'word',
-  });
-
-  const hex = data.data?.audio || '';
-  const wav = parseWavHeader(hex);
-
-  let subtitle = null;
-  if (data.data?.subtitle_file) {
-    const r = await fetch(data.data.subtitle_file, { signal: AbortSignal.timeout(5000) });
-    subtitle = await r.json();
-  }
-  const bytesPerMs = wav.wavSr * wav.wavCh * (wav.wavBits / 8) / 1000;
-  const audioDurationMs = wav.pcmSize && bytesPerMs ? wav.pcmSize / bytesPerMs : 0;
-  const built = await buildCharTime(subtitle, text, audioDurationMs);
-  const charTime = built.charTime;
-  const charSource = built.sources;
-  const charGroup = built.groups;
-  const covered = charTime.filter(Boolean).length;
-  const sourceCounts = {};
-  for (const s of charSource) if (s) sourceCounts[s] = (sourceCounts[s] || 0) + 1;
-
-  return {
-    char_time: charTime,
-    char_source: charSource,
-    char_group: charGroup,
-    char_count: Array.from(text || '').length,
-    coverage: { covered, total: charTime.length, sources: sourceCounts },
-    subtitle_debug: summarizeSubtitle(subtitle),
-    sr: wav.wavSr, ch: wav.wavCh, bits: wav.wavBits,
-    data_off: wav.pcmOff, data_size: wav.pcmSize,
-    text, audio_hex: hex
-  };
+  throw ttsProviderError('CosyVoice HTTP 当前不提供非流式字级时间轴，预处理裁切流程已停用', 501);
 }
+
 
 
 export default {
@@ -630,34 +602,19 @@ export default {
     // 调试端点
     if (url.pathname === '/debug-tts') {
       const results = [];
-      const apiKey = env.MINIMAX_API_KEY || '';
-      const groupId = env.MINIMAX_GROUP_ID || '';
+      const apiKey = env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
+      results.push('Provider: CosyVoice');
       results.push('Key: ' + (apiKey ? '已设('+apiKey.slice(0,6)+'...)' : '未设'));
-      results.push('Group: ' + (groupId ? groupId : '未设'));
-      if (!apiKey || !groupId) {
+      if (!apiKey) {
         return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
-      // 测试带字幕的请求
+      // 测试 CosyVoice 请求
       try {
-        const body = JSON.stringify({
-          model: 'speech-2.8-hd', text: '你好世界', stream: false, language_boost: 'Chinese,Yue',
-          voice_setting: {voice_id:'Cantonese_GentleLady', speed:1, vol:1, pitch:0},
-          audio_setting: {sample_rate:32000, bitrate:128000, format:'wav', channel:1},
-          subtitle_enable: true, subtitle_type: 'word',
-        });
-        await waitForMiniMaxSlot('debug-tts');
-        const resp = await fetch('https://api.minimax.chat/v1/t2a_v2?GroupId=' + groupId, {
-          method: 'POST', headers: {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'}, body,
-        });
-        const data = await resp.json();
-        results.push('API: ' + (resp.ok && data.base_resp?.status_code === 0 ? 'OK' : 'FAIL:'+(data.base_resp?.status_msg||resp.status)));
-        results.push('audio: ' + (data.data?.audio ? data.data.audio.length + 'chars(hex)' : 'NONE'));
-        results.push('sub_file: ' + (data.data?.subtitle_file || 'NONE'));
-        if (data.data?.subtitle_file) {
-          const sr = await fetch(data.data.subtitle_file);
-          const stxt = await sr.text();
-          results.push('sub_raw: ' + stxt.slice(0, 500));
-        }
+        const out = await cosyVoiceTts(env, { text: '你好世界', voice: env.COSYVOICE_VOICE || 'longanhuan_v3', format: 'wav', sample_rate: 24000, instruction: env.COSYVOICE_INSTRUCTION || '请用广东话表达。' });
+        results.push('API: OK');
+        results.push('audio: ' + out.bytes.length + ' bytes');
+        results.push('model: ' + out.model);
+        results.push('voice: ' + out.voice);
       } catch (e) {
         results.push('ERR: ' + e.message);
       }
@@ -675,31 +632,39 @@ export default {
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (e) {
-        return miniMaxJsonError(e);
+        return ttsJsonError(e);
       }
     }
 
-    // MiniMax TTS 代理（单次请求，不再切分）
+    // CosyVoice TTS 代理（单次请求，不再切分）
     if (url.pathname === '/tts') {
       if (request.method === 'HEAD') {
-        return new Response(null, { status: (env.MINIMAX_API_KEY && env.MINIMAX_GROUP_ID) ? 200 : 500 });
+        return new Response(null, { status: (env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY) ? 200 : 500 });
       }
-      if (request.method === 'POST') {
+      if (request.method === 'GET' || request.method === 'POST') {
         if (!(await checkAuth(request, env))) {
           return new Response('Unauthorized', { status: 401 });
         }
         try {
-          const body = await request.json();
-          const data = await minimaxTts(env, body);
-          const audioHex = data.data?.audio || '';
-          const audioBytes = hexToBytes(audioHex);
-          const audioFormat = data.extra_info?.audio_format || body.format || 'mp3';
-          const contentType = audioFormat === 'wav' ? 'audio/wav' : (audioFormat === 'flac' ? 'audio/flac' : 'audio/mpeg');
-          return new Response(audioBytes, {
-            headers: {'Content-Type':contentType,'Cache-Control':'public,max-age=31536000,immutable','Content-Length':String(audioBytes.length),'X-Audio-Format':audioFormat},
+          const body = request.method === 'POST'
+            ? await request.json()
+            : { text: url.searchParams.get('text') || '', voice: url.searchParams.get('voice') || undefined, speed: Number(url.searchParams.get('speed') || 1) };
+          const out = await cosyVoiceTts(env, body);
+          const audioFormat = out.format || body.format || 'wav';
+          const contentType = audioFormat === 'wav' ? 'audio/wav' : (audioFormat === 'pcm' ? 'audio/L16' : (audioFormat === 'opus' ? 'audio/ogg' : 'audio/mpeg'));
+          return new Response(out.bytes, {
+            headers: {
+              'Content-Type': contentType,
+              'Cache-Control': 'public,max-age=31536000,immutable',
+              'Content-Length': String(out.bytes.length),
+              'X-Audio-Format': audioFormat,
+              'X-TTS-Provider': 'cosyvoice',
+              'X-TTS-Model': out.model,
+              'X-TTS-Voice': out.voice,
+            },
           });
         } catch (e) {
-          return miniMaxJsonError(e);
+          return ttsJsonError(e);
         }
       }
       return new Response('Method not allowed', { status: 405 });

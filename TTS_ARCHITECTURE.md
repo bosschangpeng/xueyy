@@ -163,3 +163,18 @@ interface TtsQaResult {
 6. 在线 TTS 关闭时，离线 TTS 基础功能保持原逻辑。
 
 后台队列、课程资产表、QA 仪表盘、人工复核、多模型比较放到后续阶段。
+
+## 2026-06-27 CosyVoice 重构原则
+
+MiniMax 相关预处理、subtitle 对齐、整句裁字、载体裁字都不再作为当前实现路线。当前在线 TTS 供应商改为阿里云百炼 CosyVoice HTTP 非实时语音合成：
+
+- Worker `/tts` 调用 `https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer`。
+- 默认模型：`cosyvoice-v3-flash`。
+- 默认音色：`longanhuan_v3`，并传入 `instruction: "请用广东话表达。"`。
+- 默认输出：`wav`, `sample_rate: 24000`。
+- 前端不再显示预处理按钮；`/preprocess` 在 CosyVoice HTTP 模式下返回停用错误，因为非流式接口不提供可直接复用的字级时间轴。
+- 句子播放：直接合成整句/分段文本。
+- 词组播放：直接合成词组文本。
+- 单字播放：CosyVoice 阶段改为直接生成独立 `char_audio`；上下文载体仅作为后续兜底/对照，不再作为主路径。
+
+新的测试目标不是“从整句裁出单字”，而是验证 CosyVoice 在原文歌词、词组、独立单字三类输入上的粤语读音稳定性。若 CosyVoice 的 `hot_fix.pronunciation` 后续确认可用于粤语/粤拼或可接受的拼音标注，再把项目字典的多音字结果接入热修复层。
