@@ -553,6 +553,14 @@ function summarizeSubtitle(subtitle) {
 }
 
 // ── 预处理：直接合成当前句/片段，停顿由前端拼接真实静音 ──
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+}
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
 async function preprocessTts(env, body) {
   throw ttsProviderError('CosyVoice HTTP 当前不提供非流式字级时间轴，预处理裁切流程已停用', 501);
 }
@@ -619,6 +627,43 @@ export default {
         results.push('ERR: ' + e.message);
       }
       return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+    }
+
+
+    if (url.pathname === '/debug-pronunciation') {
+      if (!(await checkAuth(request, env))) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+      const text = url.searchParams.get('text') || '说';
+      const py = url.searchParams.get('py') || 'shuo1';
+      const jp = url.searchParams.get('jp') || 'syut3';
+      const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
+      const variants = [
+        { id: 'plain', label: '不指定读音', body: { text } },
+        { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+      ];
+      const rows = [];
+      for (const v of variants) {
+        try {
+          const out = await cosyVoiceTts(env, {
+            ...v.body,
+            voice: env.COSYVOICE_VOICE || 'longanhuan_v3',
+            model: env.COSYVOICE_MODEL || 'cosyvoice-v3-flash',
+            format: 'wav',
+            sample_rate: 24000,
+            instruction,
+          });
+          let bin = '';
+          for (const b of out.bytes) bin += String.fromCharCode(b);
+          const b64 = btoa(bin);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:audio/wav;base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, bytes: out.bytes.length, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+        } catch (e) {
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(e.message)}</pre></section>`);
+        }
+      }
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><button>生成</button></form><p>目标：听 CosyVoice 的 <code>hot_fix.pronunciation</code> 是否接受粤拼，还是只接受普通话拼音。</p>${rows.join('')}`;
+      return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
     // 预处理：整句 TTS → 切词
