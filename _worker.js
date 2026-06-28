@@ -146,9 +146,24 @@ function validateAudioBytes(bytes, format) {
   return info;
 }
 
-function normalizeCosyText(text) {
+function isSingleCjk(text) {
+  return /^[\u3400-\u9fff]$/u.test(String(text || '').trim());
+}
+
+function cosySingleCharText(raw, variant = 0) {
+  const ch = String(raw || '').trim();
+  const variants = [
+    `「${ch}」。`,
+    `${ch}。`,
+    `『${ch}』。`,
+    `${ch}，`,
+  ];
+  return variants[Math.max(0, Math.min(variant, variants.length - 1))];
+}
+
+function normalizeCosyText(text, variant = 0) {
   const raw = String(text || '').trim();
-  if (/^[\u3400-\u9fff]$/u.test(raw)) return raw + '。';
+  if (isSingleCjk(raw)) return cosySingleCharText(raw, variant);
   return raw;
 }
 
@@ -189,8 +204,9 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
   const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
 
+  const singleCharVariant = Number(opts.__singleCharVariant || 0);
   const input = {
-    text: normalizeCosyText(body.text),
+    text: normalizeCosyText(body.text, singleCharVariant),
     voice,
     format: audioFormat,
     sample_rate: sampleRate,
@@ -246,7 +262,20 @@ async function cosyVoiceTts(env, body, opts = {}) {
     const audioKeys = candidates.audio && typeof candidates.audio === 'object' ? Object.keys(candidates.audio).join(',') : typeof candidates.audio;
     throw ttsProviderError(`CosyVoice returned empty audio: outputKeys=${outputKeys}; audioKeys=${audioKeys || 'none'}`, 500);
   }
-  const audioDebug = validateAudioBytes(bytes, audioFormat);
+  let audioDebug = null;
+  try {
+    audioDebug = validateAudioBytes(bytes, audioFormat);
+  } catch (e) {
+    if (isSingleCjk(body.text) && singleCharVariant < 3 && !opts.__retryInvalidAudio) {
+      await sleep(500);
+      return await cosyVoiceTts(env, body, { ...opts, format: 'wav', __retryBadUrl: false, __retryMp3Fallback: false, __singleCharVariant: singleCharVariant + 1, __retryInvalidAudio: true });
+    }
+    if (isSingleCjk(body.text) && singleCharVariant < 3) {
+      await sleep(500);
+      return await cosyVoiceTts(env, body, { ...opts, __singleCharVariant: singleCharVariant + 1, __retryInvalidAudio: false });
+    }
+    throw e;
+  }
   return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice', requestText: input.text, audioDebug };
 }
 
