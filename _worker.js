@@ -148,6 +148,10 @@ function collectCosyAudioFromJsonPayload(payload, state) {
     if (bytes && bytes.length) state.chunks.push(bytes);
   }
 }
+function cosySseDataPayloadFromLine(line) {
+  const idx = String(line || '').indexOf('data:');
+  return idx >= 0 ? String(line).slice(idx + 5).trimStart() : '';
+}
 
 function parseCosySseAudio(text) {
   const source = String(text || '');
@@ -156,7 +160,8 @@ function parseCosySseAudio(text) {
   for (const event of events) {
     const dataLines = [];
     for (const line of event.split(/\r?\n/)) {
-      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+      const payload = cosySseDataPayloadFromLine(line);
+      if (payload) dataLines.push(payload);
     }
     if (dataLines.length === 1) {
       collectCosyAudioFromJsonPayload(dataLines[0], state);
@@ -169,7 +174,8 @@ function parseCosySseAudio(text) {
   }
   if (!state.chunks.length) {
     for (const line of source.split(/\r?\n/)) {
-      if (line.startsWith('data:')) collectCosyAudioFromJsonPayload(line.slice(5).trimStart(), state);
+      const payload = cosySseDataPayloadFromLine(line);
+      if (payload) collectCosyAudioFromJsonPayload(payload, state);
     }
   }
   return { data: state.lastData || {}, bytes: concatByteChunks(state.chunks), chunks: state.chunks.length };
