@@ -202,6 +202,10 @@ async function cosyVoiceTts(env, body, opts = {}) {
         await sleep(800);
         return await cosyVoiceTts(env, body, { ...opts, __retryBadUrl: true });
       }
+      if (Number(e.status) === 404 && audioFormat !== 'mp3' && !opts.__retryMp3Fallback) {
+        await sleep(800);
+        return await cosyVoiceTts(env, { ...body, format: 'mp3' }, { ...opts, format: 'mp3', __retryBadUrl: true, __retryMp3Fallback: true });
+      }
       throw e;
     }
   }
@@ -718,9 +722,10 @@ export default {
           let bin = '';
           for (const b of out.bytes) bin += String.fromCharCode(b);
           const b64 = btoa(bin);
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:audio/wav;base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, bytes: out.bytes.length, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+          const mime = out.format === 'mp3' ? 'audio/mpeg' : (out.format === 'opus' ? 'audio/ogg' : 'audio/wav');
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, bytes: out.bytes.length, format: out.format, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
         } catch (e) {
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(e.message)}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
       const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><button>生成</button></form><p>目标：听 CosyVoice 的 <code>hot_fix.pronunciation</code> 是否接受粤拼，还是只接受普通话拼音。</p>${rows.join('')}`;
