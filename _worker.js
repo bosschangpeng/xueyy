@@ -137,27 +137,42 @@ function audioPayloadsFromData(data) {
   ].filter(Boolean);
 }
 
+function collectCosyAudioFromJsonPayload(payload, state) {
+  const raw = String(payload || '').trim();
+  if (!raw || raw === '[DONE]') return;
+  let data = null;
+  try { data = JSON.parse(raw); } catch { return; }
+  state.lastData = data;
+  for (const audioPayload of audioPayloadsFromData(data)) {
+    const bytes = decodeAudioPayload(audioPayload);
+    if (bytes && bytes.length) state.chunks.push(bytes);
+  }
+}
+
 function parseCosySseAudio(text) {
-  const chunks = [];
-  let lastData = null;
-  const events = String(text || '').split(/\r?\n\r?\n/);
+  const source = String(text || '');
+  const state = { chunks: [], lastData: null };
+  const events = source.split(/\r?\n\r?\n/);
   for (const event of events) {
     const dataLines = [];
     for (const line of event.split(/\r?\n/)) {
       if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
     }
-    if (!dataLines.length) continue;
-    const payload = dataLines.join('\n').trim();
-    if (!payload || payload === '[DONE]') continue;
-    let data = null;
-    try { data = JSON.parse(payload); } catch { continue; }
-    lastData = data;
-    for (const audioPayload of audioPayloadsFromData(data)) {
-      const bytes = decodeAudioPayload(audioPayload);
-      if (bytes && bytes.length) chunks.push(bytes);
+    if (dataLines.length === 1) {
+      collectCosyAudioFromJsonPayload(dataLines[0], state);
+    } else if (dataLines.length > 1) {
+      collectCosyAudioFromJsonPayload(dataLines.join('\n'), state);
+      if (!state.chunks.length) {
+        for (const line of dataLines) collectCosyAudioFromJsonPayload(line, state);
+      }
     }
   }
-  return { data: lastData || {}, bytes: concatByteChunks(chunks), chunks: chunks.length };
+  if (!state.chunks.length) {
+    for (const line of source.split(/\r?\n/)) {
+      if (line.startsWith('data:')) collectCosyAudioFromJsonPayload(line.slice(5).trimStart(), state);
+    }
+  }
+  return { data: state.lastData || {}, bytes: concatByteChunks(state.chunks), chunks: state.chunks.length };
 }
 
 function getAudioDebug(bytes) {
