@@ -113,13 +113,53 @@ function decodeAudioPayload(value) {
   }
 }
 
-function getCosyAudioCandidates(data) {
+function concatByteChunks(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function audioPayloadsFromData(data) {
   const out = data?.output || {};
   const audio = out.audio || {};
-  const urls = [audio.url, audio.audio_url, out.audio_url, out.url, typeof audio === 'string' && /^https?:/i.test(audio) ? audio : ''].filter(Boolean);
-  const payloads = [audio.data, audio.hex, audio.audio, out.data, out.audio_data, typeof audio === 'string' && !/^https?:/i.test(audio) ? audio : ''].filter(Boolean);
-  return { audio, urls: [...new Set(urls)], payloads };
+  return [
+    audio.data,
+    audio.hex,
+    audio.audio,
+    out.data,
+    out.audio_data,
+    typeof audio === 'string' && !/^https?:/i.test(audio) ? audio : '',
+  ].filter(Boolean);
 }
+
+function parseCosySseAudio(text) {
+  const chunks = [];
+  let lastData = null;
+  const events = String(text || '').split(/\r?\n\r?\n/);
+  for (const event of events) {
+    const dataLines = [];
+    for (const line of event.split(/\r?\n/)) {
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+    }
+    if (!dataLines.length) continue;
+    const payload = dataLines.join('\n').trim();
+    if (!payload || payload === '[DONE]') continue;
+    let data = null;
+    try { data = JSON.parse(payload); } catch { continue; }
+    lastData = data;
+    for (const audioPayload of audioPayloadsFromData(data)) {
+      const bytes = decodeAudioPayload(audioPayload);
+      if (bytes && bytes.length) chunks.push(bytes);
+    }
+  }
+  return { data: lastData || {}, bytes: concatByteChunks(chunks), chunks: chunks.length };
+}
+
 function getAudioDebug(bytes) {
   const head = Array.from(bytes || []).slice(0, 16);
   return {
@@ -150,46 +190,10 @@ function isSingleCjk(text) {
   return /^[\u3400-\u9fff]$/u.test(String(text || '').trim());
 }
 
-function cosySingleCharText(raw, variant = 0) {
-  const ch = String(raw || '').trim();
-  const variants = [
-    `「${ch}」。`,
-    `${ch}。`,
-    `『${ch}』。`,
-    `${ch}，`,
-  ];
-  return variants[Math.max(0, Math.min(variant, variants.length - 1))];
-}
-
-function normalizeCosyText(text, variant = 0) {
+function normalizeCosyText(text) {
   const raw = String(text || '').trim();
-  if (isSingleCjk(raw)) return cosySingleCharText(raw, variant);
+  if (isSingleCjk(raw)) return raw + '。';
   return raw;
-}
-
-
-async function fetchCosyAudioUrl(url, apiKey) {
-  const delays = [0, 450, 1200, 2500];
-  let lastStatus = 0;
-  let lastDetail = '';
-  for (let i = 0; i < delays.length; i++) {
-    if (delays[i] > 0) await sleep(delays[i]);
-    const resp = await fetch(url, {
-      headers: {
-        'Accept': 'audio/*,*/*',
-        'Authorization': 'Bearer ' + apiKey,
-        'User-Agent': 'xueyy-cosyvoice-worker/1.0',
-      },
-      redirect: 'follow',
-    });
-    if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
-    lastStatus = resp.status;
-    try { lastDetail = (await resp.clone().text()).slice(0, 180); } catch {}
-    if (resp.status !== 404) break;
-  }
-  let host = '';
-  try { host = new URL(url).host; } catch {}
-  throw ttsProviderError(`CosyVoice audio url fetch failed: ${lastStatus}${host ? ' host=' + host : ''}${lastDetail ? ' body=' + lastDetail : ''}`, lastStatus || 500);
 }
 
 async function cosyVoiceTts(env, body, opts = {}) {
@@ -204,9 +208,8 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
   const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
 
-  const singleCharVariant = Number(opts.__singleCharVariant || 0);
   const input = {
-    text: normalizeCosyText(body.text, singleCharVariant),
+    text: normalizeCosyText(body.text),
     voice,
     format: audioFormat,
     sample_rate: sampleRate,
@@ -222,7 +225,12 @@ async function cosyVoiceTts(env, body, opts = {}) {
 
   const resp = await fetch('https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer', {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'X-DashScope-SSE': 'enable',
+    },
     body: JSON.stringify({ model, input }),
   });
   if (!resp.ok) {
@@ -235,50 +243,31 @@ async function cosyVoiceTts(env, body, opts = {}) {
     }
     throw ttsProviderError(msg, resp.status, resp.headers.get('Retry-After') || '');
   }
-  const data = await resp.json();
-  const candidates = getCosyAudioCandidates(data);
-  let bytes = null;
-  for (const payload of candidates.payloads) {
-    bytes = decodeAudioPayload(payload);
-    if (bytes && bytes.length) break;
-  }
-  if ((!bytes || !bytes.length) && candidates.urls.length) {
-    try {
-      bytes = await fetchCosyAudioUrl(candidates.urls[0], apiKey);
-    } catch (e) {
-      if (Number(e.status) === 404 && !opts.__retryBadUrl) {
-        await sleep(800);
-        return await cosyVoiceTts(env, body, { ...opts, __retryBadUrl: true });
-      }
-      if (Number(e.status) === 404 && audioFormat !== 'mp3' && !opts.__retryMp3Fallback) {
-        await sleep(800);
-        return await cosyVoiceTts(env, { ...body, format: 'mp3' }, { ...opts, format: 'mp3', __retryBadUrl: true, __retryMp3Fallback: true });
-      }
-      throw e;
-    }
-  }
-  if (!bytes || !bytes.length) {
-    const outputKeys = Object.keys(data.output || {}).join(',') || 'none';
-    const audioKeys = candidates.audio && typeof candidates.audio === 'object' ? Object.keys(candidates.audio).join(',') : typeof candidates.audio;
-    throw ttsProviderError(`CosyVoice returned empty audio: outputKeys=${outputKeys}; audioKeys=${audioKeys || 'none'}`, 500);
-  }
-  let audioDebug = null;
-  try {
-    audioDebug = validateAudioBytes(bytes, audioFormat);
-  } catch (e) {
-    if (isSingleCjk(body.text) && singleCharVariant < 3 && !opts.__retryInvalidAudio) {
-      await sleep(500);
-      return await cosyVoiceTts(env, body, { ...opts, format: 'wav', __retryBadUrl: false, __retryMp3Fallback: false, __singleCharVariant: singleCharVariant + 1, __retryInvalidAudio: true });
-    }
-    if (isSingleCjk(body.text) && singleCharVariant < 3) {
-      await sleep(500);
-      return await cosyVoiceTts(env, body, { ...opts, __singleCharVariant: singleCharVariant + 1, __retryInvalidAudio: false });
-    }
-    throw e;
-  }
-  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice', requestText: input.text, audioDebug };
-}
 
+  const sseText = await resp.text();
+  const parsed = parseCosySseAudio(sseText);
+  let bytes = parsed.bytes;
+  let data = parsed.data;
+
+  if (!bytes || !bytes.length) {
+    try {
+      data = JSON.parse(sseText);
+      const chunks = [];
+      for (const payload of audioPayloadsFromData(data)) {
+        const decoded = decodeAudioPayload(payload);
+        if (decoded && decoded.length) chunks.push(decoded);
+      }
+      bytes = concatByteChunks(chunks);
+    } catch {}
+  }
+
+  if (!bytes || !bytes.length) {
+    const preview = sseText.slice(0, 300).replace(/\s+/g, ' ');
+    throw ttsProviderError(`CosyVoice streaming returned no inline audio: ${preview}`, 502);
+  }
+  const audioDebug = validateAudioBytes(bytes, audioFormat);
+  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-sse', requestText: input.text, audioDebug, chunks: parsed.chunks };
+}
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
 }
@@ -785,7 +774,7 @@ export default {
           for (const b of out.bytes) bin += String.fromCharCode(b);
           const b64 = btoa(bin);
           const mime = out.format === 'mp3' ? 'audio/mpeg' : (out.format === 'opus' ? 'audio/ogg' : 'audio/wav');
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
