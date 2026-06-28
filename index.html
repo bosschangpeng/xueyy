@@ -874,7 +874,7 @@ async function speak(text, rate = 1) {
   statusBar.textContent = `✅ "${text}"`;
 }
 
-function speakOne(text, rate, vol, voice, idx, total, runId) {
+function speakOne(text, rate, vol, voice, idx, total, runId = speechRunId) {
   return new Promise(resolve => {
     let settled = false;
     const finish = (ok, reason, extra = {}) => {
@@ -1922,7 +1922,7 @@ async function speakOneCached(text, rate, token) {
     const voice = await resolveVoice();
     if (!voice) return false;
     if (!isPlaybackCurrent(token)) return false;
-    return speakOne(text, rate, 1, voice, 0, 1);
+    return speakOne(text, rate, 1, voice, 0, 1, speechRunId);
   }
   const cacheKey = clipCacheKey(text);
   if (cacheAvailable) {
@@ -1949,7 +1949,7 @@ async function speakOneCached(text, rate, token) {
     const voice = await resolveVoice();
     if (!voice) return false;
     if (!isPlaybackCurrent(token)) return false;
-    return speakOne(text, rate, 1, voice, 0, 1);
+    return speakOne(text, rate, 1, voice, 0, 1, speechRunId);
   }
 }
 
