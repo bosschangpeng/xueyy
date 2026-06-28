@@ -217,6 +217,150 @@ function normalizeCosyText(text) {
   return raw;
 }
 
+function cosyWsUrl(env) {
+  const explicit = env.COSYVOICE_WS_URL || env.DASHSCOPE_WS_URL || '';
+  if (explicit) return explicit;
+  const workspaceId = env.DASHSCOPE_WORKSPACE_ID || env.COSYVOICE_WORKSPACE_ID || env.ALIYUN_WORKSPACE_ID || '';
+  const region = env.DASHSCOPE_REGION || env.COSYVOICE_REGION || 'cn-beijing';
+  if (workspaceId) return `wss://${workspaceId}.${region}.maas.aliyuncs.com/api-ws/v1/inference`;
+  return 'wss://dashscope.aliyuncs.com/api-ws/v1/inference';
+}
+
+function wsTextPayload(data) {
+  if (typeof data === 'string') return data;
+  try {
+    if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  } catch {}
+  return '';
+}
+
+async function openCosyWs(env, apiKey) {
+  const wsUrl = cosyWsUrl(env);
+  const headers = {
+    'Authorization': 'Bearer ' + apiKey,
+    'User-Agent': 'xueyy-cosyvoice-worker/1.0',
+    'Upgrade': 'websocket',
+  };
+  const workspaceId = env.DASHSCOPE_WORKSPACE_ID || env.COSYVOICE_WORKSPACE_ID || env.ALIYUN_WORKSPACE_ID || '';
+  if (workspaceId) headers['X-DashScope-WorkSpace'] = workspaceId;
+  const resp = await fetch(wsUrl, { headers });
+  if (resp.status !== 101 || !resp.webSocket) {
+    let txt = '';
+    try { txt = await resp.text(); } catch {}
+    throw ttsProviderError(`CosyVoice WebSocket connect failed: ${resp.status}${txt ? ': ' + txt.slice(0, 180) : ''}`, resp.status || 502);
+  }
+  const ws = resp.webSocket;
+  ws.accept();
+  return { ws, wsUrl };
+}
+
+function closeWsQuietly(ws, code = 1000, reason = 'done') {
+  try { ws.close(code, reason); } catch {}
+}
+
+async function runCosyWsTask(env, apiKey, request) {
+  const { ws, wsUrl } = await openCosyWs(env, apiKey);
+  const taskId = crypto.randomUUID();
+  const chunks = [];
+  const events = [];
+  let lastData = {};
+  let sentText = false;
+  let finished = false;
+
+  const parameters = {
+    text_type: 'PlainText',
+    voice: request.voice,
+    format: request.format,
+    sample_rate: request.sampleRate,
+    volume: request.volume,
+    rate: request.rate,
+    pitch: request.pitch,
+    enable_ssml: !!request.enableSsml,
+    language_hints: request.languageHints,
+    enable_aigc_tag: !!request.enableAigcTag,
+  };
+  if (request.instruction) parameters.instruction = request.instruction;
+  if (request.hotFix) parameters.hot_fix = request.hotFix;
+
+  const runTask = {
+    header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
+    payload: {
+      task_group: 'audio',
+      task: 'tts',
+      function: 'SpeechSynthesizer',
+      model: request.model,
+      parameters,
+      input: {},
+    },
+  };
+  const continueTask = {
+    header: { action: 'continue-task', task_id: taskId, streaming: 'duplex' },
+    payload: { input: { text: request.text } },
+  };
+  const finishTask = {
+    header: { action: 'finish-task', task_id: taskId, streaming: 'duplex' },
+    payload: { input: {} },
+  };
+
+  return await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      closeWsQuietly(ws, 1011, 'timeout');
+      reject(ttsProviderError(`CosyVoice WebSocket timeout: events=${events.join(',')}; chunks=${chunks.length}`, 504));
+    }, Number(env.COSYVOICE_WS_TIMEOUT_MS || 35000));
+
+    const fail = (err) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      closeWsQuietly(ws, 1011, 'failed');
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      closeWsQuietly(ws);
+      resolve({ bytes: concatByteChunks(chunks), data: lastData, chunks: chunks.length, events, taskId, wsUrl });
+    };
+
+    ws.addEventListener('message', async (event) => {
+      const data = event.data;
+      if (data instanceof ArrayBuffer) {
+        chunks.push(new Uint8Array(data));
+        return;
+      }
+      if (data && typeof data !== 'string' && typeof data.arrayBuffer === 'function') {
+        try { chunks.push(new Uint8Array(await data.arrayBuffer())); } catch (e) { fail(e); }
+        return;
+      }
+      const txt = wsTextPayload(data);
+      if (!txt) return;
+      let msg = null;
+      try { msg = JSON.parse(txt); } catch { return; }
+      lastData = msg;
+      const eventName = msg?.header?.event || msg?.payload?.output?.type || '';
+      if (eventName) events.push(eventName);
+      if (eventName === 'task-started' && !sentText) {
+        sentText = true;
+        ws.send(JSON.stringify(continueTask));
+        ws.send(JSON.stringify(finishTask));
+      } else if (eventName === 'task-failed') {
+        fail(ttsProviderError(msg?.header?.error_message || msg?.header?.error_code || 'CosyVoice task failed', 502));
+      } else if (eventName === 'task-finished') {
+        done();
+      }
+    });
+    ws.addEventListener('close', () => {
+      if (!finished) done();
+    });
+    ws.addEventListener('error', (event) => {
+      fail(ttsProviderError(`CosyVoice WebSocket error: ${event?.message || 'unknown'}`, 502));
+    });
+
+    ws.send(JSON.stringify(runTask));
+  });
+}
+
 async function cosyVoiceTts(env, body, opts = {}) {
   const apiKey = env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
   if (!apiKey) throw new Error('CosyVoice not configured: missing DASHSCOPE_API_KEY');
@@ -229,65 +373,28 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
   const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
 
-  const input = {
+  const request = {
     text: normalizeCosyText(body.text),
     voice,
     format: audioFormat,
-    sample_rate: sampleRate,
+    sampleRate,
     volume: Number(body.volume ?? opts.volume ?? 50),
     rate: Number.isFinite(rate) ? Math.max(0.5, Math.min(2.0, rate)) : 1.0,
     pitch: Number(body.pitch ?? opts.pitch ?? 1.0),
-    language_hints: body.language_hints || opts.language_hints || ['zh'],
-    enable_aigc_tag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
+    languageHints: body.language_hints || opts.language_hints || ['zh'],
+    enableAigcTag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
+    enableSsml: body.enable_ssml || opts.enable_ssml,
+    hotFix: body.hot_fix || opts.hot_fix || null,
+    instruction,
+    model,
   };
-  if (instruction) input.instruction = instruction;
-  if (body.hot_fix || opts.hot_fix) input.hot_fix = body.hot_fix || opts.hot_fix;
-  if (body.enable_ssml || opts.enable_ssml) input.enable_ssml = true;
 
-  const resp = await fetch('https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer', {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + apiKey,
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      'X-DashScope-SSE': 'enable',
-    },
-    body: JSON.stringify({ model, input }),
-  });
-  if (!resp.ok) {
-    let msg = 'CosyVoice API ' + resp.status;
-    try {
-      const errData = await resp.clone().json();
-      msg = errData.message || errData.code || errData.error || msg;
-    } catch {
-      try { const txt = await resp.text(); if (txt) msg = msg + ': ' + txt.slice(0, 200); } catch {}
-    }
-    throw ttsProviderError(msg, resp.status, resp.headers.get('Retry-After') || '');
+  const out = await runCosyWsTask(env, apiKey, request);
+  if (!out.bytes || !out.bytes.length) {
+    throw ttsProviderError(`CosyVoice WebSocket returned no audio: events=${out.events.join(',')}; task=${out.taskId}`, 502);
   }
-
-  const sseText = await resp.text();
-  const parsed = parseCosySseAudio(sseText);
-  let bytes = parsed.bytes;
-  let data = parsed.data;
-
-  if (!bytes || !bytes.length) {
-    try {
-      data = JSON.parse(sseText);
-      const chunks = [];
-      for (const payload of audioPayloadsFromData(data)) {
-        const decoded = decodeAudioPayload(payload);
-        if (decoded && decoded.length) chunks.push(decoded);
-      }
-      bytes = concatByteChunks(chunks);
-    } catch {}
-  }
-
-  if (!bytes || !bytes.length) {
-    const preview = sseText.slice(0, 300).replace(/\s+/g, ' ');
-    throw ttsProviderError(`CosyVoice streaming returned no inline audio: ${preview}`, 502);
-  }
-  const audioDebug = validateAudioBytes(bytes, audioFormat);
-  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-sse', requestText: input.text, audioDebug, chunks: parsed.chunks };
+  const audioDebug = validateAudioBytes(out.bytes, audioFormat);
+  return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, audioDebug, chunks: out.chunks, taskId: out.taskId };
 }
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
