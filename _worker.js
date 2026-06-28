@@ -122,20 +122,27 @@ function getCosyAudioCandidates(data) {
 }
 
 async function fetchCosyAudioUrl(url, apiKey) {
-  const resp = await fetch(url, {
-    headers: {
-      'Accept': 'audio/*,*/*',
-      'Authorization': 'Bearer ' + apiKey,
-      'User-Agent': 'xueyy-cosyvoice-worker/1.0',
-    },
-    redirect: 'follow',
-  });
-  if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
-  let detail = '';
-  try { detail = (await resp.clone().text()).slice(0, 180); } catch {}
+  const delays = [0, 450, 1200, 2500];
+  let lastStatus = 0;
+  let lastDetail = '';
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) await sleep(delays[i]);
+    const resp = await fetch(url, {
+      headers: {
+        'Accept': 'audio/*,*/*',
+        'Authorization': 'Bearer ' + apiKey,
+        'User-Agent': 'xueyy-cosyvoice-worker/1.0',
+      },
+      redirect: 'follow',
+    });
+    if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
+    lastStatus = resp.status;
+    try { lastDetail = (await resp.clone().text()).slice(0, 180); } catch {}
+    if (resp.status !== 404) break;
+  }
   let host = '';
   try { host = new URL(url).host; } catch {}
-  throw ttsProviderError(`CosyVoice audio url fetch failed: ${resp.status}${host ? ' host=' + host : ''}${detail ? ' body=' + detail : ''}`, resp.status);
+  throw ttsProviderError(`CosyVoice audio url fetch failed: ${lastStatus}${host ? ' host=' + host : ''}${lastDetail ? ' body=' + lastDetail : ''}`, lastStatus || 500);
 }
 
 async function cosyVoiceTts(env, body, opts = {}) {
@@ -188,7 +195,15 @@ async function cosyVoiceTts(env, body, opts = {}) {
     if (bytes && bytes.length) break;
   }
   if ((!bytes || !bytes.length) && candidates.urls.length) {
-    bytes = await fetchCosyAudioUrl(candidates.urls[0], apiKey);
+    try {
+      bytes = await fetchCosyAudioUrl(candidates.urls[0], apiKey);
+    } catch (e) {
+      if (Number(e.status) === 404 && !opts.__retryBadUrl) {
+        await sleep(800);
+        return await cosyVoiceTts(env, body, { ...opts, __retryBadUrl: true });
+      }
+      throw e;
+    }
   }
   if (!bytes || !bytes.length) {
     const outputKeys = Object.keys(data.output || {}).join(',') || 'none';
