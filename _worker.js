@@ -120,6 +120,38 @@ function getCosyAudioCandidates(data) {
   const payloads = [audio.data, audio.hex, audio.audio, out.data, out.audio_data, typeof audio === 'string' && !/^https?:/i.test(audio) ? audio : ''].filter(Boolean);
   return { audio, urls: [...new Set(urls)], payloads };
 }
+function getAudioDebug(bytes) {
+  const head = Array.from(bytes || []).slice(0, 16);
+  return {
+    bytes: bytes?.length || 0,
+    hex: head.map(b => b.toString(16).padStart(2, '0')).join(' '),
+    ascii: head.map(b => (b >= 32 && b <= 126) ? String.fromCharCode(b) : '.').join(''),
+  };
+}
+
+function validateAudioBytes(bytes, format) {
+  const info = getAudioDebug(bytes);
+  const fmt = String(format || '').toLowerCase();
+  if (!bytes || bytes.length < 512) throw ttsProviderError(`CosyVoice returned invalid audio: too small ${JSON.stringify(info)}`, 502);
+  if (bytes[0] === 60 || bytes[0] === 123) throw ttsProviderError(`CosyVoice returned invalid audio payload: ${JSON.stringify(info)}`, 502);
+  if (fmt === 'wav') {
+    const ok = bytes.length > 44 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70;
+    if (!ok) throw ttsProviderError(`CosyVoice returned invalid wav: ${JSON.stringify(info)}`, 502);
+  }
+  if (fmt === 'mp3') {
+    const hasId3 = bytes[0] === 73 && bytes[1] === 68 && bytes[2] === 51;
+    const hasFrame = bytes[0] === 255 && (bytes[1] & 224) === 224;
+    if (bytes.length < 2400 || (!hasId3 && !hasFrame)) throw ttsProviderError(`CosyVoice returned invalid mp3: ${JSON.stringify(info)}`, 502);
+  }
+  return info;
+}
+
+function normalizeCosyText(text) {
+  const raw = String(text || '').trim();
+  if (/^[\u3400-\u9fff]$/u.test(raw)) return raw + '。';
+  return raw;
+}
+
 
 async function fetchCosyAudioUrl(url, apiKey) {
   const delays = [0, 450, 1200, 2500];
@@ -158,7 +190,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
 
   const input = {
-    text: body.text,
+    text: normalizeCosyText(body.text),
     voice,
     format: audioFormat,
     sample_rate: sampleRate,
@@ -214,7 +246,8 @@ async function cosyVoiceTts(env, body, opts = {}) {
     const audioKeys = candidates.audio && typeof candidates.audio === 'object' ? Object.keys(candidates.audio).join(',') : typeof candidates.audio;
     throw ttsProviderError(`CosyVoice returned empty audio: outputKeys=${outputKeys}; audioKeys=${audioKeys || 'none'}`, 500);
   }
-  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice' };
+  const audioDebug = validateAudioBytes(bytes, audioFormat);
+  return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice', requestText: input.text, audioDebug };
 }
 
 function hexToBytes(hex) {
@@ -723,7 +756,7 @@ export default {
           for (const b of out.bytes) bin += String.fromCharCode(b);
           const b64 = btoa(bin);
           const mime = out.format === 'mp3' ? 'audio/mpeg' : (out.format === 'opus' ? 'audio/ogg' : 'audio/wav');
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, bytes: out.bytes.length, format: out.format, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
