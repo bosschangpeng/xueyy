@@ -825,13 +825,13 @@ function pickCantonese(voices) {
   return voices.find(v => v.lang.startsWith('zh-HK') || v.lang.startsWith('yue')) || null;
 }
 
-function chunkText(text) {
+function chunkText(text, maxLen = 60) {
   const chunks = []; let cur = '';
   for (const ch of text) {
     if (/\s/.test(ch)) {
       if (cur) { chunks.push(cur); cur = ''; }
     } else if (/[。！？，、；：\n\r]/.test(ch) && cur.length > 5) { cur += ch; chunks.push(cur); cur = ''; }
-    else if (cur.length >= 60) { chunks.push(cur); cur = ch; }
+    else if (cur.length >= maxLen) { chunks.push(cur); cur = ch; }
     else { cur += ch; }
   }
   if (cur) chunks.push(cur);
@@ -842,7 +842,7 @@ async function speak(text, rate = 1) {
   if (!text) return;
   debugLog('speak:fallback-begin', { text: compactPreview(text), rate, onlineTtsEnabled, hasSpeechSynthesis: 'speechSynthesis' in window });
   stopSpeak();
-  const parts = chunkText(text);
+  const parts = chunkText(text, onlineTtsEnabled ? 60 : 18);
   statusBar.textContent = `🔊 ${parts.length}段: ${parts.join(' | ')}`;
   if (onlineTtsEnabled) {
     for (let i = 0; i < parts.length; i++) {
@@ -874,15 +874,32 @@ async function speak(text, rate = 1) {
   statusBar.textContent = `✅ "${text}"`;
 }
 
-function speakOne(text, rate, vol, voice, idx, total, runId = speechRunId) {
+function speakOne(text, rate, vol, voice, idx, total, runId = speechRunId, attempt = 0) {
   return new Promise(resolve => {
     let settled = false;
+    let startedAt = 0;
+    let lastBoundaryIndex = -1;
     const finish = (ok, reason, extra = {}) => {
       if (settled) return;
       settled = true;
       if (currentUtterance === u) currentUtterance = null;
-      debugLog(reason, { text, idx: idx + 1, total, ...extra });
+      debugLog(reason, { text, idx: idx + 1, total, attempt, ...extra });
       resolve(ok);
+    };
+    const replaySuspiciousEnd = (elapsedMs) => {
+      if (attempt >= 1 || runId !== speechRunId) return false;
+      const chars = charLen(text.replace(/[\s。！？？，、；：,.!?;:]/g, ''));
+      const expectedMinMs = Math.min(2600, Math.max(900, chars * 170 / Math.max(rate, 0.5)));
+      if (chars < 4 || elapsedMs >= expectedMinMs) return false;
+      const tail = lastBoundaryIndex > 0 && lastBoundaryIndex < text.length - 1 ? text.slice(lastBoundaryIndex).trim() : text;
+      const retryText = tail && charLen(tail) >= 2 ? tail : text;
+      settled = true;
+      if (currentUtterance === u) currentUtterance = null;
+      debugLog('speak:system-early-end-retry', { text, retryText, idx: idx + 1, total, attempt, elapsedMs: Math.round(elapsedMs), expectedMinMs: Math.round(expectedMinMs), lastBoundaryIndex });
+      setTimeout(() => {
+        speakOne(retryText, rate, vol, voice, idx, total, runId, attempt + 1).then(resolve);
+      }, 180);
+      return true;
     };
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'zh-HK';
@@ -891,7 +908,14 @@ function speakOne(text, rate, vol, voice, idx, total, runId = speechRunId) {
     u.voice = voice;
     currentUtterance = u;
     statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
-    u.onend = () => finish(true, 'speak:system-end');
+    u.onboundary = (e) => {
+      if (typeof e.charIndex === 'number' && e.charIndex > lastBoundaryIndex) lastBoundaryIndex = e.charIndex;
+    };
+    u.onend = () => {
+      const elapsedMs = startedAt ? performance.now() - startedAt : 0;
+      if (replaySuspiciousEnd(elapsedMs)) return;
+      finish(true, 'speak:system-end', { elapsedMs: Math.round(elapsedMs), lastBoundaryIndex });
+    };
     u.onerror = (e) => {
       const err = e.error || e.message || String(e);
       console.warn('TTS error:', err);
@@ -900,6 +924,7 @@ function speakOne(text, rate, vol, voice, idx, total, runId = speechRunId) {
     setTimeout(() => {
       if (runId !== speechRunId) return finish(false, 'speak:system-stale');
       window.speechSynthesis.resume();
+      startedAt = performance.now();
       window.speechSynthesis.speak(u);
     }, 80);
     const watchdogMs = Math.max(8000, text.length * 650 / Math.max(rate, 0.5));
