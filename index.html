@@ -334,6 +334,7 @@ function segmentGreedy(text, reverse) {
 }
 
 let currentUtterance = null;
+let speechRunId = 0;
 let currentAudioCtx = null;
 let currentAudioSrc = null;
 let playbackToken = 0;
@@ -862,33 +863,52 @@ async function speak(text, rate = 1) {
   }
   if (!voice) return speakOnline(text, rate);
 
+  const runId = speechRunId;
   for (let i = 0; i < parts.length; i++) {
+    if (runId !== speechRunId) break;
     debugLog('speak:system-part', { text: parts[i], idx: i + 1, total: parts.length, voice: voice?.name || '' });
-    const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length);
-    if (!ok) break;
-    if (i < parts.length - 1) await new Promise(r => setTimeout(r, 200));
+    const ok = await speakOne(parts[i], rate, vol, voice, i, parts.length, runId);
+    if (!ok || runId !== speechRunId) break;
+    if (i < parts.length - 1) await new Promise(r => setTimeout(r, 260));
   }
   statusBar.textContent = `✅ "${text}"`;
 }
 
-function speakOne(text, rate, vol, voice, idx, total) {
+function speakOne(text, rate, vol, voice, idx, total, runId) {
   return new Promise(resolve => {
-    window.speechSynthesis.cancel();
+    let settled = false;
+    const finish = (ok, reason, extra = {}) => {
+      if (settled) return;
+      settled = true;
+      if (currentUtterance === u) currentUtterance = null;
+      debugLog(reason, { text, idx: idx + 1, total, ...extra });
+      resolve(ok);
+    };
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'zh-HK';
+    u.rate = Math.max(0.1, Math.min(2, rate));
+    u.volume = Number.isFinite(vol) ? Math.max(0, Math.min(1, vol)) : 1;
+    u.voice = voice;
+    currentUtterance = u;
+    statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
+    u.onend = () => finish(true, 'speak:system-end');
+    u.onerror = (e) => {
+      const err = e.error || e.message || String(e);
+      console.warn('TTS error:', err);
+      finish(false, 'speak:system-error', { error: err });
+    };
     setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'zh-HK';
-      u.rate = Math.max(0.1, Math.min(10, rate));
-      u.volume = 1;
-      u.voice = voice;
-      currentUtterance = u;
-      statusBar.textContent = `🔊 发音中 (${idx+1}/${total}): "${text}"`;
-      u.onend = () => { currentUtterance = null; debugLog('speak:system-end', { text, idx: idx + 1, total }); resolve(true); };
-      u.onerror = (e) => { currentUtterance = null; console.warn('TTS error:', e.error || e.message || e); debugLog('speak:system-error', { text, idx: idx + 1, total, error: e.error || e.message || String(e) }); resolve(false); };
+      if (runId !== speechRunId) return finish(false, 'speak:system-stale');
+      window.speechSynthesis.resume();
       window.speechSynthesis.speak(u);
-      setTimeout(() => {
-        if (currentUtterance === u) { currentUtterance = null; debugLog('speak:system-timeout-resolve', { text, idx: idx + 1, total }); resolve(true); }
-      }, Math.max(text.length * 150 / rate, 500));
-    }, 50);
+    }, 80);
+    const watchdogMs = Math.max(8000, text.length * 650 / Math.max(rate, 0.5));
+    setTimeout(() => {
+      if (!settled && currentUtterance === u) {
+        try { window.speechSynthesis.cancel(); } catch {}
+        finish(false, 'speak:system-watchdog-timeout', { watchdogMs: Math.round(watchdogMs) });
+      }
+    }, watchdogMs);
   });
 }
 
@@ -924,6 +944,7 @@ async function tryFetchAudio(url, rate) {
 }
 
 function stopSpeak() {
+  speechRunId++;
   window.speechSynthesis.cancel();
   window.speechSynthesis.resume();
   currentUtterance = null;
