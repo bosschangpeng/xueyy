@@ -94,6 +94,50 @@ async function checkAuth(request, env) {
   return val === '1';
 }
 
+function decodeAudioPayload(value) {
+  if (!value || typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const dataUrl = raw.match(/^data:[^,]+,(.*)$/i);
+  const payload = dataUrl ? dataUrl[1] : raw;
+  if (/^[0-9a-f]+$/i.test(payload) && payload.length % 2 === 0 && payload.length > 64) {
+    return hexToBytes(payload);
+  }
+  try {
+    const bin = atob(payload);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function getCosyAudioCandidates(data) {
+  const out = data?.output || {};
+  const audio = out.audio || {};
+  const urls = [audio.url, audio.audio_url, out.audio_url, out.url, typeof audio === 'string' && /^https?:/i.test(audio) ? audio : ''].filter(Boolean);
+  const payloads = [audio.data, audio.hex, audio.audio, out.data, out.audio_data, typeof audio === 'string' && !/^https?:/i.test(audio) ? audio : ''].filter(Boolean);
+  return { audio, urls: [...new Set(urls)], payloads };
+}
+
+async function fetchCosyAudioUrl(url, apiKey) {
+  const resp = await fetch(url, {
+    headers: {
+      'Accept': 'audio/*,*/*',
+      'Authorization': 'Bearer ' + apiKey,
+      'User-Agent': 'xueyy-cosyvoice-worker/1.0',
+    },
+    redirect: 'follow',
+  });
+  if (resp.ok) return new Uint8Array(await resp.arrayBuffer());
+  let detail = '';
+  try { detail = (await resp.clone().text()).slice(0, 180); } catch {}
+  let host = '';
+  try { host = new URL(url).host; } catch {}
+  throw ttsProviderError(`CosyVoice audio url fetch failed: ${resp.status}${host ? ' host=' + host : ''}${detail ? ' body=' + detail : ''}`, resp.status);
+}
+
 async function cosyVoiceTts(env, body, opts = {}) {
   const apiKey = env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
   if (!apiKey) throw new Error('CosyVoice not configured: missing DASHSCOPE_API_KEY');
@@ -137,18 +181,20 @@ async function cosyVoiceTts(env, body, opts = {}) {
     throw ttsProviderError(msg, resp.status, resp.headers.get('Retry-After') || '');
   }
   const data = await resp.json();
-  const audio = data.output?.audio || {};
+  const candidates = getCosyAudioCandidates(data);
   let bytes = null;
-  if (audio.data) {
-    const bin = atob(audio.data);
-    bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  } else if (audio.url) {
-    const ar = await fetch(audio.url);
-    if (!ar.ok) throw ttsProviderError('CosyVoice audio url fetch failed: ' + ar.status, ar.status);
-    bytes = new Uint8Array(await ar.arrayBuffer());
+  for (const payload of candidates.payloads) {
+    bytes = decodeAudioPayload(payload);
+    if (bytes && bytes.length) break;
   }
-  if (!bytes || !bytes.length) throw ttsProviderError('CosyVoice returned empty audio', 500);
+  if ((!bytes || !bytes.length) && candidates.urls.length) {
+    bytes = await fetchCosyAudioUrl(candidates.urls[0], apiKey);
+  }
+  if (!bytes || !bytes.length) {
+    const outputKeys = Object.keys(data.output || {}).join(',') || 'none';
+    const audioKeys = candidates.audio && typeof candidates.audio === 'object' ? Object.keys(candidates.audio).join(',') : typeof candidates.audio;
+    throw ttsProviderError(`CosyVoice returned empty audio: outputKeys=${outputKeys}; audioKeys=${audioKeys || 'none'}`, 500);
+  }
   return { data, bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice' };
 }
 
