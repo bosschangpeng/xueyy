@@ -243,7 +243,8 @@ async function openCosyWs(env, apiKey) {
   };
   const workspaceId = env.DASHSCOPE_WORKSPACE_ID || env.COSYVOICE_WORKSPACE_ID || env.ALIYUN_WORKSPACE_ID || '';
   if (workspaceId) headers['X-DashScope-WorkSpace'] = workspaceId;
-  const resp = await fetch(wsUrl, { headers });
+  const fetchUrl = wsUrl.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
+  const resp = await fetch(fetchUrl, { headers });
   if (resp.status !== 101 || !resp.webSocket) {
     let txt = '';
     try { txt = await resp.text(); } catch {}
