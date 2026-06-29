@@ -272,7 +272,28 @@ function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80) {
 function findTargetWord(words, target) {
   const t = String(target || '').trim();
   if (!t || !Array.isArray(words)) return null;
-  return words.find(w => String(w.text || '') === t && Number.isFinite(w.begin_time) && Number.isFinite(w.end_time) && w.end_time > w.begin_time) || null;
+  const exact = words.find(w => String(w.text || '') === t && Number.isFinite(w.begin_time) && Number.isFinite(w.end_time) && w.end_time > w.begin_time);
+  if (exact) return { ...exact, source: 'exact' };
+  for (const w of words) {
+    const txt = String(w.text || '');
+    const pos = txt.indexOf(t);
+    if (pos < 0 || !Number.isFinite(w.begin_time) || !Number.isFinite(w.end_time) || w.end_time <= w.begin_time) continue;
+    const chars = Array.from(txt);
+    const targetChars = Array.from(t);
+    const charPos = Array.from(txt.slice(0, pos)).length;
+    const span = Math.max(1, chars.length);
+    const dur = w.end_time - w.begin_time;
+    return {
+      text: t,
+      begin_index: (w.begin_index || 0) + charPos,
+      end_index: (w.begin_index || 0) + charPos + targetChars.length,
+      begin_time: w.begin_time + dur * (charPos / span),
+      end_time: w.begin_time + dur * ((charPos + targetChars.length) / span),
+      source: 'split-word',
+      original_word: w,
+    };
+  }
+  return null;
 }
 
 function isSingleCjk(text) {
@@ -1000,7 +1021,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time);
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 8, 24);
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
