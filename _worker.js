@@ -525,6 +525,7 @@ async function runCosyWsTask(env, apiKey, request) {
     word_timestamp_enabled: !!request.wordTimestampEnabled,
   };
   if (request.instruction) parameters.instruction = request.instruction;
+  if (request.pronunciationDict) parameters.pronunciation_dict = request.pronunciationDict;
   if (request.hotFix) parameters.hot_fix = request.hotFix;
 
   const runTask = {
@@ -641,6 +642,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
     enableAigcTag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
     enableSsml: body.enable_ssml || opts.enable_ssml,
     wordTimestampEnabled: body.word_timestamp_enabled || opts.word_timestamp_enabled,
+    pronunciationDict: body.pronunciation_dict || opts.pronunciation_dict || null,
     hotFix: body.hot_fix || opts.hot_fix || null,
     instruction,
     model,
@@ -1193,16 +1195,17 @@ export default {
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
       const instruction = debugVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
       const single = isSingleCjk(text);
-      const carrierText = single ? `${text}，字。` : text;
+      const carrierText = single ? `${text}\uFF0C\u5B57\u3002` : text;
+      const jpTone = jp ? `${text}/(${jp})` : '';
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const allVariants = single ? [
-        { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
-        { id: 'carrier-pinyin', label: `教学载体 + 普通话拼音 hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
-        { id: 'carrier-jyutping', label: `教学载体 + 粤拼 hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'carrier', label: `Carrier: ${carrierText}`, body: baseBody },
+        { id: 'carrier-jyutping-dict', label: `Carrier + pronunciation_dict: ${jp}`, body: { ...baseBody, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
+        { id: 'carrier-jyutping-hotfix', label: `Carrier + jyutping hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ] : [
-        { id: 'plain', label: '不指定读音', body: { text } },
-        { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
-        { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'plain', label: 'No override', body: { text } },
+        { id: 'jyutping-dict', label: `pronunciation_dict: ${jp}`, body: { text, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
+        { id: 'jyutping-hotfix', label: `Jyutping hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];

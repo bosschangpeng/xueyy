@@ -353,7 +353,7 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v2_sentence_timeline';
+const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v3_jyutping_dict_timeline';
 const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v1';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
@@ -577,14 +577,15 @@ function teachingAssetSourceCacheKey(asset) {
   ].join('|'));
 }
 
-function preprocessChunkCacheKey(text) {
+function preprocessChunkCacheKey(text, pronunciationDict = null) {
   return 'pre_' + hashText([
     ALIGN_SCHEMA_VERSION,
     ttsVoice,
     'preprocess-v1',
     'cosyvoice-v3-flash',
     '0.85',
-    text
+    text,
+    JSON.stringify(pronunciationDict || {})
   ].join('|'));
 }
 
@@ -1327,6 +1328,37 @@ function pronunciationToneForText(text, jyutping) {
   return `${ttsText}/${syllables.map(jp => `(${jp})`).join('')}`;
 }
 
+function pronunciationToneForProviderText(text, jyutping) {
+  const ttsText = String(text || '').replace(/\s+/g, '');
+  const syllables = normalizeJyutpingSyllables(jyutping);
+  if (!ttsText || !syllables.length) return '';
+  return `${ttsText}/${syllables.map(jp => `(${jp})`).join('')}`;
+}
+
+function pronunciationDictForChunkInfo(chunkInfo) {
+  const sentence = currentSentences[chunkInfo?.si];
+  if (!sentence?.words?.length) return null;
+  const tones = [];
+  const seen = new Set();
+  for (const w of sentence.words) {
+    if (!w || w.type === 'punct' || w.type === 'space') continue;
+    const text = String(w.text || '').replace(/\s+/g, '');
+    if (!text) continue;
+    const override = contextualJyutpingOverride(w.text, { sentence, si: chunkInfo.si, wi: sentence.words.indexOf(w) });
+    const jyutping = override?.jyutping || jyutpingForTeachingText(w.text);
+    const syllables = normalizeJyutpingSyllables(jyutping);
+    if (!syllables.length) continue;
+    const textLen = charLen(text);
+    if (textLen !== syllables.length) continue;
+    const tone = pronunciationToneForProviderText(text, syllables.join(' '));
+    if (tone && !seen.has(tone)) {
+      seen.add(tone);
+      tones.push(tone);
+    }
+  }
+  return tones.length ? { tone: tones } : null;
+}
+
 function isPlayableTtsChar(ch) {
   const normalized = compactTtsText(ch);
   return !!normalized && /[\u4e00-\u9fff]/u.test(normalized);
@@ -1846,12 +1878,13 @@ function scheduleTeachingAssetPrewarm(reason = 'preprocess') {
   setTimeout(() => { prewarmTeachingAssets(reason).catch(e => debugLog('teaching-prewarm:error', { reason, error: e.message })); }, 0);
 }
 
-async function fetchPreprocessChunk(chunk, label) {
-  const cacheKey = preprocessChunkCacheKey(chunk);
+async function fetchPreprocessChunk(chunk, label, chunkInfo = null) {
+  const pronunciationDict = pronunciationDictForChunkInfo(chunkInfo);
+  const cacheKey = preprocessChunkCacheKey(chunk, pronunciationDict);
   if (cacheAvailable) {
     const cached = await ttsCache.get(cacheKey);
     if (cached?.audio_hex && cached?.char_time && cached?.text === chunk && cached?.alignVersion === ALIGN_SCHEMA_VERSION) {
-      debugLog('preprocess:chunk-cache-hit', { label, text: compactPreview(chunk, 48), cacheKey: cacheKey.slice(0, 18), textLength: charLen(chunk) });
+      debugLog('preprocess:chunk-cache-hit', { label, text: compactPreview(chunk, 48), cacheKey: cacheKey.slice(0, 18), textLength: charLen(chunk), pronunciationDict: cached.pronunciationDict || null });
       return { pd: cached, fromCache: true, cacheKey };
     }
     if (cached) await ttsCache.delete(cacheKey);
@@ -1859,7 +1892,7 @@ async function fetchPreprocessChunk(chunk, label) {
   const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: chunk, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
+    body: JSON.stringify({ text: chunk, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined, pronunciation_dict: pronunciationDict || undefined }),
   }, label);
   if (!resp.ok) {
     let msg = '预处理失败: ' + resp.status;
@@ -1868,7 +1901,7 @@ async function fetchPreprocessChunk(chunk, label) {
   }
   const pd = await resp.json();
   if (!pd.char_time || !pd.audio_hex) throw new Error(label + ' 数据无效');
-  const cachedPd = { ...pd, text: pd.text || chunk, alignVersion: ALIGN_SCHEMA_VERSION };
+  const cachedPd = { ...pd, text: pd.text || chunk, pronunciationDict, alignVersion: ALIGN_SCHEMA_VERSION };
   if (cacheAvailable) await ttsCache.set(cacheKey, cachedPd);
   return { pd: cachedPd, fromCache: false, cacheKey };
 }
@@ -2474,7 +2507,7 @@ preprocessBtn.addEventListener('click', async () => {
       statusBar.textContent = `⚡ 预处理第 ${ci+1}/${chunks.length} 批 (${chunk.length}字)...`;
       preprocessFill.style.width = pct + '%';
 
-      const { pd, fromCache: chunkFromCache, cacheKey: chunkCacheKey } = await fetchPreprocessChunk(chunk, `preprocess-main-${ci + 1}/${chunks.length}`);
+      const { pd, fromCache: chunkFromCache, cacheKey: chunkCacheKey } = await fetchPreprocessChunk(chunk, `preprocess-main-${ci + 1}/${chunks.length}`, chunkInfo);
 
       sr = pd.sr || 32000; ch = pd.ch || 1; bits = pd.bits || 16;
       const hex = pd.audio_hex;
@@ -2546,6 +2579,8 @@ preprocessBtn.addEventListener('click', async () => {
         sources: sourceCount,
         firstMissing,
         subtitleDebug: pd.subtitle_debug || [],
+        pronunciationDict: pd.pronunciationDict || null,
+        providerParameters: pd.parameters || null,
         fromCache: chunkFromCache,
         chunkCacheKey: chunkCacheKey.slice(0, 18)
       };
