@@ -266,6 +266,7 @@ async function runCosyWsTask(env, apiKey, request) {
   const events = [];
   let lastData = {};
   let sentText = false;
+  let finishSent = false;
   let finished = false;
 
   const parameters = {
@@ -339,15 +340,22 @@ async function runCosyWsTask(env, apiKey, request) {
       let msg = null;
       try { msg = JSON.parse(txt); } catch { return; }
       lastData = msg;
-      const eventName = msg?.header?.event || msg?.payload?.output?.type || '';
+      const headerEvent = msg?.header?.event || '';
+      const outputType = msg?.payload?.output?.type || '';
+      const eventName = outputType ? `${headerEvent}:${outputType}` : headerEvent;
       if (eventName) events.push(eventName);
-      if (eventName === 'task-started' && !sentText) {
+      if (headerEvent === 'task-started' && !sentText) {
         sentText = true;
         ws.send(JSON.stringify(continueTask));
-        ws.send(JSON.stringify(finishTask));
-      } else if (eventName === 'task-failed') {
+        setTimeout(() => {
+          if (!finished && !finishSent) {
+            finishSent = true;
+            try { ws.send(JSON.stringify(finishTask)); } catch (e) { fail(e); }
+          }
+        }, Number(env.COSYVOICE_FINISH_DELAY_MS || 260));
+      } else if (headerEvent === 'task-failed') {
         fail(ttsProviderError(msg?.header?.error_message || msg?.header?.error_code || 'CosyVoice task failed', 502));
-      } else if (eventName === 'task-finished') {
+      } else if (headerEvent === 'task-finished') {
         done();
       }
     });
