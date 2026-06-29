@@ -232,6 +232,7 @@ function parseWavInfo(bytes) {
     pos = dataPos + size + (size % 2);
   }
   if (!info.dataOffset || !info.dataSize || info.audioFormat !== 1 || !info.blockAlign) return null;
+  info.dataSize = Math.min(info.dataSize, bytes.length - info.dataOffset);
   return info;
 }
 
@@ -267,6 +268,61 @@ function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80) {
   if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
   const pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
   return makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample);
+}
+function cropFirstActiveWavSegment(bytes) {
+  const info = parseWavInfo(bytes);
+  if (!info || info.bitsPerSample !== 16) throw ttsProviderError('Energy crop only supports 16-bit PCM wav', 502);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const frameBytes = info.blockAlign;
+  const totalFrames = Math.floor(info.dataSize / frameBytes);
+  const windowFrames = Math.max(1, Math.floor(info.sampleRate * 0.012));
+  const energies = [];
+  let peak = 0;
+  for (let start = 0; start < totalFrames; start += windowFrames) {
+    const end = Math.min(totalFrames, start + windowFrames);
+    let sum = 0;
+    let count = 0;
+    for (let f = start; f < end; f++) {
+      const offset = info.dataOffset + f * frameBytes;
+      for (let ch = 0; ch < info.channels; ch++) {
+        sum += Math.abs(view.getInt16(offset + ch * 2, true));
+        count++;
+      }
+    }
+    const e = count ? sum / count : 0;
+    peak = Math.max(peak, e);
+    energies.push({ start, end, e });
+  }
+  const threshold = Math.max(260, peak * 0.16);
+  let activeStart = -1;
+  let activeEnd = -1;
+  const segments = [];
+  for (const w of energies) {
+    if (w.e >= threshold) {
+      if (activeStart < 0) activeStart = w.start;
+      activeEnd = w.end;
+    } else if (activeStart >= 0) {
+      if ((activeEnd - activeStart) / info.sampleRate >= 0.06) segments.push([activeStart, activeEnd]);
+      activeStart = -1;
+      activeEnd = -1;
+    }
+  }
+  if (activeStart >= 0) segments.push([activeStart, activeEnd]);
+  if (!segments.length) throw ttsProviderError(`Energy crop found no active segment: peak=${Math.round(peak)}`, 502);
+  let [startFrame, endFrame] = segments[0];
+  if (segments.length === 1) {
+    const dur = endFrame - startFrame;
+    endFrame = startFrame + Math.max(Math.floor(info.sampleRate * 0.18), Math.floor(dur * 0.46));
+  }
+  startFrame = Math.max(0, startFrame - Math.floor(info.sampleRate * 0.012));
+  endFrame = Math.min(totalFrames, endFrame + Math.floor(info.sampleRate * 0.028));
+  const pcmStart = startFrame * frameBytes;
+  const pcmEnd = endFrame * frameBytes;
+  const pcm = bytes.slice(info.dataOffset + pcmStart, info.dataOffset + pcmEnd);
+  return {
+    bytes: makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample),
+    range: { source: 'energy-first-segment', startMs: Math.round(startFrame * 1000 / info.sampleRate), endMs: Math.round(endFrame * 1000 / info.sampleRate), peak: Math.round(peak), threshold: Math.round(threshold), segments: segments.map(([a, b]) => [Math.round(a * 1000 / info.sampleRate), Math.round(b * 1000 / info.sampleRate)]) }
+  };
 }
 
 function findTargetWord(words, target) {
@@ -990,7 +1046,7 @@ export default {
       const jp = url.searchParams.get('jp') || 'syut3';
       const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
       const single = isSingleCjk(text);
-      const carrierText = single ? `${text}字。` : text;
+      const carrierText = single ? `${text}，字。` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const variants = single ? [
         { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
@@ -1010,6 +1066,7 @@ export default {
             model: env.COSYVOICE_MODEL || 'cosyvoice-v3-flash',
             format: 'wav',
             sample_rate: 24000,
+            speed: single ? 0.78 : undefined,
             instruction,
           });
           let bin = '';
@@ -1027,7 +1084,11 @@ export default {
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
               clipMeta = { target: v.body.teaching_target, word: targetWord, bytes: clipped.length, audioDebug: getAudioDebug(clipped) };
             } else {
-              clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found' };
+              const energyClip = cropFirstActiveWavSegment(out.bytes);
+              let ebin = '';
+              for (const b of energyClip.bytes) ebin += String.fromCharCode(b);
+              clipHtml = `<h4>裁切目标字（能量兜底）</h4><audio controls src="data:audio/wav;base64,${btoa(ebin)}"></audio>`;
+              clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found', fallback: energyClip.range, bytes: energyClip.bytes.length, audioDebug: getAudioDebug(energyClip.bytes) };
             }
           }
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
