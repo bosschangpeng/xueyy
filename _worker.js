@@ -1047,6 +1047,7 @@ export default {
       const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longanhuan_v3';
       const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
       const runAll = url.searchParams.get('all') === '1';
+      const allowEnergyFallback = url.searchParams.get('fallback') === '1';
       const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}，字。` : text;
@@ -1087,20 +1088,22 @@ export default {
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
               clipMeta = { target: v.body.teaching_target, word: targetWord, bytes: clipped.length, audioDebug: getAudioDebug(clipped) };
-            } else {
+            } else if (allowEnergyFallback) {
               const energyClip = cropFirstActiveWavSegment(out.bytes);
               let ebin = '';
               for (const b of energyClip.bytes) ebin += String.fromCharCode(b);
-              clipHtml = `<h4>裁切目标字（能量兜底）</h4><audio controls src="data:audio/wav;base64,${btoa(ebin)}"></audio>`;
+              clipHtml = `<h4>能量裁切实验（非有效单字）</h4><audio controls src="data:audio/wav;base64,${btoa(ebin)}"></audio>`;
               clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found', fallback: energyClip.range, bytes: energyClip.bytes.length, audioDebug: getAudioDebug(energyClip.bytes) };
+            } else {
+              clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found', fallback: 'disabled; add fallback=1 to inspect energy crop' };
             }
           }
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, parameters: out.parameters, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice, runAll }, null, 2))}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, parameters: out.parameters, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice, runAll, allowEnergyFallback }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用；加 <code>all=1</code> 才比较 hot_fix。重点检查 parameters.word_timestamp_enabled 与 outputs/words。</p>${rows.join('')}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用；加 <code>all=1</code> 才比较 hot_fix。只有官方 words 时间戳裁出的音频算有效；加 <code>fallback=1</code> 可查看能量裁切实验。</p>${rows.join('')}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
