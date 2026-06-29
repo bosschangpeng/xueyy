@@ -206,6 +206,74 @@ function validateAudioBytes(bytes, format) {
   }
   return info;
 }
+function readAscii(bytes, offset, len) {
+  return String.fromCharCode(...bytes.slice(offset, offset + len));
+}
+
+function parseWavInfo(bytes) {
+  if (readAscii(bytes, 0, 4) !== 'RIFF' || readAscii(bytes, 8, 4) !== 'WAVE') return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let pos = 12;
+  const info = { audioFormat: 0, channels: 0, sampleRate: 0, bitsPerSample: 0, blockAlign: 0, dataOffset: 0, dataSize: 0 };
+  while (pos + 8 <= bytes.length) {
+    const id = readAscii(bytes, pos, 4);
+    const size = view.getUint32(pos + 4, true);
+    const dataPos = pos + 8;
+    if (id === 'fmt ') {
+      info.audioFormat = view.getUint16(dataPos, true);
+      info.channels = view.getUint16(dataPos + 2, true);
+      info.sampleRate = view.getUint32(dataPos + 4, true);
+      info.blockAlign = view.getUint16(dataPos + 12, true);
+      info.bitsPerSample = view.getUint16(dataPos + 14, true);
+    } else if (id === 'data') {
+      info.dataOffset = dataPos;
+      info.dataSize = size;
+    }
+    pos = dataPos + size + (size % 2);
+  }
+  if (!info.dataOffset || !info.dataSize || info.audioFormat !== 1 || !info.blockAlign) return null;
+  return info;
+}
+
+function makePcmWav(pcm, sampleRate, channels, bitsPerSample) {
+  const out = new Uint8Array(44 + pcm.length);
+  const view = new DataView(out.buffer);
+  const write = (offset, text) => { for (let i = 0; i < text.length; i++) out[offset + i] = text.charCodeAt(i); };
+  write(0, 'RIFF');
+  view.setUint32(4, 36 + pcm.length, true);
+  write(8, 'WAVE');
+  write(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * channels * bitsPerSample / 8, true);
+  view.setUint16(32, channels * bitsPerSample / 8, true);
+  view.setUint16(34, bitsPerSample, true);
+  write(36, 'data');
+  view.setUint32(40, pcm.length, true);
+  out.set(pcm, 44);
+  return out;
+}
+
+function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80) {
+  const info = parseWavInfo(bytes);
+  if (!info) throw ttsProviderError('WAV crop only supports PCM wav', 502);
+  const bytesPerMs = info.sampleRate * info.blockAlign / 1000;
+  let start = Math.max(0, Math.floor((startMs - padStartMs) * bytesPerMs));
+  let end = Math.min(info.dataSize, Math.ceil((endMs + padEndMs) * bytesPerMs));
+  start -= start % info.blockAlign;
+  end -= end % info.blockAlign;
+  if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
+  const pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
+  return makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample);
+}
+
+function findTargetWord(words, target) {
+  const t = String(target || '').trim();
+  if (!t || !Array.isArray(words)) return null;
+  return words.find(w => String(w.text || '') === t && Number.isFinite(w.begin_time) && Number.isFinite(w.end_time) && w.end_time > w.begin_time) || null;
+}
 
 function isSingleCjk(text) {
   return /^[\u3400-\u9fff]$/u.test(String(text || '').trim());
@@ -264,6 +332,8 @@ async function runCosyWsTask(env, apiKey, request) {
   const taskId = crypto.randomUUID();
   const chunks = [];
   const events = [];
+  const outputs = [];
+  let words = [];
   let lastData = {};
   let sentText = false;
   let finishSent = false;
@@ -280,6 +350,7 @@ async function runCosyWsTask(env, apiKey, request) {
     enable_ssml: !!request.enableSsml,
     language_hints: request.languageHints,
     enable_aigc_tag: !!request.enableAigcTag,
+    word_timestamp_enabled: !!request.wordTimestampEnabled,
   };
   if (request.instruction) parameters.instruction = request.instruction;
   if (request.hotFix) parameters.hot_fix = request.hotFix;
@@ -322,7 +393,7 @@ async function runCosyWsTask(env, apiKey, request) {
       finished = true;
       clearTimeout(timeout);
       closeWsQuietly(ws);
-      resolve({ bytes: concatByteChunks(chunks), data: lastData, chunks: chunks.length, events, taskId, wsUrl });
+      resolve({ bytes: concatByteChunks(chunks), data: lastData, chunks: chunks.length, events, outputs, words, taskId, wsUrl });
     };
 
     ws.addEventListener('message', async (event) => {
@@ -341,7 +412,12 @@ async function runCosyWsTask(env, apiKey, request) {
       try { msg = JSON.parse(txt); } catch { return; }
       lastData = msg;
       const headerEvent = msg?.header?.event || '';
-      const outputType = msg?.payload?.output?.type || '';
+      const output = msg?.payload?.output || null;
+      if (output) {
+        outputs.push(output);
+        if (Array.isArray(output?.sentence?.words) && output.sentence.words.length) words = output.sentence.words;
+      }
+      const outputType = output?.type || '';
       const eventName = outputType ? `${headerEvent}:${outputType}` : headerEvent;
       if (eventName) events.push(eventName);
       if (headerEvent === 'task-started' && !sentText) {
@@ -393,6 +469,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
     languageHints: body.language_hints || opts.language_hints || ['zh'],
     enableAigcTag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
     enableSsml: body.enable_ssml || opts.enable_ssml,
+    wordTimestampEnabled: body.word_timestamp_enabled || opts.word_timestamp_enabled,
     hotFix: body.hot_fix || opts.hot_fix || null,
     instruction,
     model,
@@ -403,7 +480,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
     throw ttsProviderError(`CosyVoice WebSocket returned no audio: events=${out.events.join(',')}; task=${out.taskId}`, 502);
   }
   const audioDebug = validateAudioBytes(out.bytes, audioFormat);
-  return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, audioDebug, chunks: out.chunks, taskId: out.taskId };
+  return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, audioDebug, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, taskId: out.taskId };
 }
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
@@ -891,7 +968,14 @@ export default {
       const py = url.searchParams.get('py') || 'shuo1';
       const jp = url.searchParams.get('jp') || 'syut3';
       const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
-      const variants = [
+      const single = isSingleCjk(text);
+      const carrierText = single ? `${text}字。` : text;
+      const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
+      const variants = single ? [
+        { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
+        { id: 'carrier-pinyin', label: `教学载体 + 普通话拼音 hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'carrier-jyutping', label: `教学载体 + 粤拼 hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+      ] : [
         { id: 'plain', label: '不指定读音', body: { text } },
         { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
         { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
@@ -911,12 +995,26 @@ export default {
           for (const b of out.bytes) bin += String.fromCharCode(b);
           const b64 = btoa(bin);
           const mime = out.format === 'mp3' ? 'audio/mpeg' : (out.format === 'opus' ? 'audio/ogg' : 'audio/wav');
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><audio controls src="data:${mime};base64,${b64}"></audio><pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+          let clipHtml = '';
+          let clipMeta = null;
+          if (v.body.teaching_target && out.format === 'wav') {
+            const targetWord = findTargetWord(out.words, v.body.teaching_target);
+            if (targetWord) {
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time);
+              let cbin = '';
+              for (const b of clipped) cbin += String.fromCharCode(b);
+              clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
+              clipMeta = { target: v.body.teaching_target, word: targetWord, bytes: clipped.length, audioDebug: getAudioDebug(clipped) };
+            } else {
+              clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found' };
+            }
+          }
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><button>生成</button></form><p>目标：听 CosyVoice 的 <code>hot_fix.pronunciation</code> 是否接受粤拼，还是只接受普通话拼音。</p>${rows.join('')}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><button>生成</button></form><p>目标：单字使用一次 API 的教学载体生成，验证 word timestamp 与裁切目标字；非单字仍比较 hot_fix。</p>${rows.join('')}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
