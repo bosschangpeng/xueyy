@@ -357,8 +357,8 @@ const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v1_no_preprocess';
 const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v1';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
-const ONLINE_CHAR_AUDIO_ENABLED = true;
-const ONLINE_CHAR_AUDIO_MODE = 'direct';
+const ONLINE_CHAR_AUDIO_ENABLED = false;
+const ONLINE_CHAR_AUDIO_MODE = 'context_word';
 const TEACHING_ASSET_MODEL = 'cosyvoice-v3-flash';
 const TEACHING_ASSET_FORMAT = 'wav';
 
@@ -3353,10 +3353,17 @@ async function playWord(si, wi) {
   if (onlineTtsEnabled && !songData) {
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
-    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
-    if (!isPlaybackCurrent(token)) return;
-    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
-    if (assetOk) return;
+    if (wLen <= 1 && !ONLINE_CHAR_AUDIO_ENABLED) {
+      const contextOk = await playTeachingContextForChar(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
+      if (contextOk) return;
+    } else {
+      const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
+      if (!isPlaybackCurrent(token)) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
+      if (assetOk) return;
+    }
   }
 
   if (onlineTtsEnabled && songData) {
