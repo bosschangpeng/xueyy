@@ -3,7 +3,7 @@
 // ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
 // DASHSCOPE_API_KEY = 阿里云百炼 DashScope API Key
 // COSYVOICE_MODEL = 可选，默认 cosyvoice-v3-flash
-// COSYVOICE_VOICE = 可选，默认 longanhuan_v3
+// COSYVOICE_VOICE = 可选，默认 longjiayi_v3
 // KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
@@ -352,6 +352,75 @@ function findTargetWord(words, target) {
   return null;
 }
 
+function sourceCounts(list) {
+  const out = {};
+  for (const item of Array.isArray(list) ? list : []) {
+    const key = item || 'unknown';
+    out[key] = (out[key] || 0) + 1;
+  }
+  return out;
+}
+
+function cosyWordText(word) {
+  return String(word?.text ?? word?.word ?? '').trim();
+}
+
+function cosyWordBegin(word) {
+  const value = word?.begin_time ?? word?.time_begin;
+  return Number.isFinite(value) ? value : Number(value);
+}
+
+function cosyWordEnd(word) {
+  const value = word?.end_time ?? word?.time_end;
+  return Number.isFinite(value) ? value : Number(value);
+}
+
+function buildCharTimeFromCosyWords(words, text, audioDurationMs) {
+  const idx = buildTextIndex(text);
+  const charTime = new Array(idx.chars.length);
+  const sources = new Array(idx.chars.length);
+  const groups = new Array(idx.chars.length);
+  let cursor = 0;
+
+  for (let i = 0; i < (Array.isArray(words) ? words.length : 0); i++) {
+    const word = words[i];
+    const wordText = cosyWordText(word);
+    const timeBegin = cosyWordBegin(word);
+    const timeEnd = cosyWordEnd(word);
+    if (!wordText || !Number.isFinite(timeBegin) || !Number.isFinite(timeEnd) || timeEnd <= timeBegin) continue;
+
+    let candidates = [];
+    if (word?.begin_index != null && word?.end_index != null) candidates = candidates.concat(offsetCandidates(idx, word.begin_index, word.end_index, wordText, 'cosy-word'));
+    if (word?.text_begin != null && word?.text_end != null) candidates = candidates.concat(offsetCandidates(idx, word.text_begin, word.text_end, wordText, 'cosy-word-text'));
+    candidates = candidates.filter(c => c.score >= 3 && c.end > c.start);
+    candidates.sort((a, b) => b.score - a.score);
+    const range = candidates[0] || findTextRange(idx, wordText, cursor);
+    if (!range) continue;
+
+    const sourceLabel = range.end - range.start === 1 ? 'char' : 'word';
+    const groupId = `${sourceLabel}:${i}:${range.start}-${range.end}`;
+    if (applyTimedRange(charTime, sources, groups, range, timeBegin, timeEnd, sourceLabel, groupId)) {
+      cursor = Math.max(cursor, range.end);
+    }
+  }
+
+  fillCharTimeGaps(charTime, audioDurationMs, sources);
+  return { charTime, sources, groups };
+}
+
+function summarizeCosyWords(words) {
+  return (Array.isArray(words) ? words : []).slice(0, 80).map((word, idx) => ({
+    idx,
+    text: cosyWordText(word),
+    begin_index: word?.begin_index,
+    end_index: word?.end_index,
+    text_begin: word?.text_begin,
+    text_end: word?.text_end,
+    begin_time: cosyWordBegin(word),
+    end_time: cosyWordEnd(word),
+  }));
+}
+
 function isSingleCjk(text) {
   return /^[\u3400-\u9fff]$/u.test(String(text || '').trim());
 }
@@ -500,12 +569,10 @@ async function runCosyWsTask(env, apiKey, request) {
       if (headerEvent === 'task-started' && !sentText) {
         sentText = true;
         ws.send(JSON.stringify(continueTask));
-        setTimeout(() => {
-          if (!finished && !finishSent) {
-            finishSent = true;
-            try { ws.send(JSON.stringify(finishTask)); } catch (e) { fail(e); }
-          }
-        }, Number(env.COSYVOICE_FINISH_DELAY_MS || 260));
+        if (!finished && !finishSent) {
+          finishSent = true;
+          try { ws.send(JSON.stringify(finishTask)); } catch (e) { fail(e); }
+        }
       } else if (headerEvent === 'task-failed') {
         fail(ttsProviderError(msg?.header?.error_message || msg?.header?.error_code || 'CosyVoice task failed', 502));
       } else if (headerEvent === 'task-finished') {
@@ -530,10 +597,11 @@ async function cosyVoiceTts(env, body, opts = {}) {
 
   const audioFormat = opts.format || body.format || 'wav';
   const model = body.model || opts.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
-  const voice = body.voice || opts.voice || env.COSYVOICE_VOICE || 'longanhuan_v3';
+  const voice = body.voice || opts.voice || env.COSYVOICE_VOICE || 'longjiayi_v3';
   const rate = Number(body.rate ?? body.speed ?? opts.rate ?? 1.0);
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
-  const instruction = body.instruction || opts.instruction || env.COSYVOICE_INSTRUCTION || (voice === 'longanhuan_v3' ? '请用广东话表达。' : '');
+  const explicitInstruction = body.instruction ?? opts.instruction;
+  const instruction = explicitInstruction != null ? explicitInstruction : (voice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '');
 
   const request = {
     text: normalizeCosyText(body.text),
@@ -969,7 +1037,54 @@ function escapeAttr(value) {
 }
 
 async function preprocessTts(env, body) {
-  throw ttsProviderError('CosyVoice HTTP 当前不提供非流式字级时间轴，预处理裁切流程已停用', 501);
+  const text = String(body?.text || '').trim();
+  if (!text) throw ttsProviderError('预处理文本不能为空', 400);
+  const voice = body?.voice || env.COSYVOICE_VOICE || 'longjiayi_v3';
+  const model = body?.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
+  const speed = Number(body?.speed ?? body?.rate ?? 0.85);
+  const sampleRate = Number(body?.sample_rate || 24000);
+  const instruction = body?.instruction != null ? body.instruction : (voice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '');
+  const out = await cosyVoiceTts(env, {
+    text,
+    voice,
+    model,
+    format: 'wav',
+    sample_rate: sampleRate,
+    speed,
+    language_hints: ['zh'],
+    word_timestamp_enabled: true,
+    instruction,
+  });
+  const wav = parseWavInfo(out.bytes);
+  if (!wav) throw ttsProviderError('CosyVoice 预处理仅支持 PCM WAV 输出', 502);
+  if (!Array.isArray(out.words) || !out.words.length) {
+    throw ttsProviderError(`CosyVoice 未返回字词时间戳: voice=${voice}; events=${out.events.join(',')}`, 502);
+  }
+  const audioDurationMs = wav.dataSize / (wav.sampleRate * wav.blockAlign / 1000);
+  const timeline = buildCharTimeFromCosyWords(out.words, text, audioDurationMs);
+  const total = Array.from(text).length;
+  const covered = timeline.charTime.filter(Boolean).length;
+  if (!covered) throw ttsProviderError(`CosyVoice 时间戳无法映射到原文: voice=${voice}; words=${out.words.length}`, 502);
+  return {
+    text,
+    audio_hex: bytesToHex(out.bytes),
+    data_off: wav.dataOffset,
+    data_size: wav.dataSize,
+    sr: wav.sampleRate,
+    ch: wav.channels,
+    bits: wav.bitsPerSample,
+    char_time: timeline.charTime.map(x => x ? [Math.round(x[0]), Math.round(x[1])] : null),
+    char_source: timeline.sources,
+    char_group: timeline.groups,
+    char_count: total,
+    coverage: { covered, total, sources: sourceCounts(timeline.sources) },
+    subtitle_debug: summarizeCosyWords(out.words),
+    provider: out.provider,
+    voice: out.voice,
+    model: out.model,
+    request_text: out.requestText,
+    parameters: out.parameters,
+  };
 }
 
 
@@ -1025,7 +1140,9 @@ export default {
       }
       // 测试 CosyVoice 请求
       try {
-        const out = await cosyVoiceTts(env, { text: '你好世界', voice: env.COSYVOICE_VOICE || 'longanhuan_v3', format: 'wav', sample_rate: 24000, instruction: env.COSYVOICE_INSTRUCTION || '请用广东话表达。' });
+        const healthVoice = env.COSYVOICE_VOICE || 'longjiayi_v3';
+        const healthInstruction = healthVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
+        const out = await cosyVoiceTts(env, { text: '你好世界', voice: healthVoice, format: 'wav', sample_rate: 24000, instruction: healthInstruction });
         results.push('API: OK');
         results.push('audio: ' + out.bytes.length + ' bytes');
         results.push('model: ' + out.model);
@@ -1044,11 +1161,11 @@ export default {
       const text = url.searchParams.get('text') || '说';
       const py = url.searchParams.get('py') || 'shuo1';
       const jp = url.searchParams.get('jp') || 'syut3';
-      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longanhuan_v3';
+      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longjiayi_v3';
       const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
       const runAll = url.searchParams.get('all') === '1';
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
-      const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
+      const instruction = debugVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}，字。` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };

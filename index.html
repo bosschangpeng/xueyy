@@ -353,12 +353,13 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v1_no_preprocess';
+const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v2_sentence_timeline';
 const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v1';
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
-const ONLINE_CHAR_AUDIO_ENABLED = false;
-const ONLINE_CHAR_AUDIO_MODE = 'context_word';
+const AUTO_PREWARM_TEACHING_ASSETS = false;
+const ONLINE_CHAR_AUDIO_ENABLED = true;
+const ONLINE_CHAR_AUDIO_MODE = 'direct';
 const TEACHING_ASSET_MODEL = 'cosyvoice-v3-flash';
 const TEACHING_ASSET_FORMAT = 'wav';
 
@@ -985,14 +986,22 @@ function stopSpeak() {
 // ── CosyVoice 在线 TTS + IndexedDB 缓存 ──
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
-let ttsVoice = localStorage.getItem('mxVoice') || 'longanhuan_v3';
+let ttsVoice = localStorage.getItem('mxVoice') || 'longjiayi_v3';
 let isolatedCharFallbackEnabled = false;
 localStorage.removeItem('isolatedCharFallback');
 let currentAudio = null;
 
+const MX_VOICE_MIGRATION_KEY = 'mxVoiceTimelineMigration20260629';
 const MX_VOICES = [
-  { id: 'longanhuan_v3', label: 'Cosy 广东话 ♀' },
+  { id: 'longjiayi_v3', label: 'Cosy 粤语女 ♀' },
+  { id: 'longanyue_v3', label: 'Cosy 粤语男 ♂' },
+  { id: 'longanhuan_v3', label: 'Cosy 多方言女 ♀' },
 ];
+if (!localStorage.getItem(MX_VOICE_MIGRATION_KEY) && ttsVoice === 'longanhuan_v3') {
+  ttsVoice = 'longjiayi_v3';
+  localStorage.setItem('mxVoice', ttsVoice);
+  localStorage.setItem(MX_VOICE_MIGRATION_KEY, '1');
+}
 if (!MX_VOICES.some(v => v.id === ttsVoice)) {
   ttsVoice = MX_VOICES[0].id;
   localStorage.setItem('mxVoice', ttsVoice);
@@ -1031,8 +1040,8 @@ isolatedCharFallbackToggle.checked = false;
 if (onlineTtsEnabled) {
   mxVoiceWrap.style.display = '';
   isolatedCharFallbackWrap.style.display = 'none';
-  document.getElementById('preprocessRow').style.display = 'none';
-  document.getElementById('preprocessBtn').style.display = 'none';
+  document.getElementById('preprocessRow').style.display = '';
+  document.getElementById('preprocessBtn').style.display = '';
   updateCacheStat();
 } else {
   mxVoiceWrap.style.display = 'none';
@@ -1053,8 +1062,8 @@ onlineTtsToggle.addEventListener('change', () => {
   if (onlineTtsEnabled) {
     mxVoiceWrap.style.display = '';
     isolatedCharFallbackWrap.style.display = 'none';
-    document.getElementById('preprocessRow').style.display = 'none';
-    document.getElementById('preprocessBtn').style.display = 'none';
+    document.getElementById('preprocessRow').style.display = '';
+    document.getElementById('preprocessBtn').style.display = '';
     initMxVoice(); updateCacheStat();
     statusBar.textContent = '☁️ CosyVoice在线TTS模式';
   } else {
@@ -1244,11 +1253,15 @@ async function fetchTtsProxy(path, init, label = 'tts') {
   }
 }
 
+function ttsInstructionForVoice(voice) {
+  return voice === 'longanhuan_v3' ? '请用广东话表达。' : '';
+}
+
 async function fetchTtsFromProvider(text) {
   const resp = await fetchTtsProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: ttsVoice, speed: 0.9, model: TEACHING_ASSET_MODEL, format: 'wav', sample_rate: 24000, instruction: '请用广东话表达。' }),
+    body: JSON.stringify({ text, voice: ttsVoice, speed: 0.9, model: TEACHING_ASSET_MODEL, format: 'wav', sample_rate: 24000, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
   }, 'tts-clip');
   if (!resp.ok) {
     let msg = 'CosyVoice TTS failed: ' + resp.status;
@@ -1572,7 +1585,7 @@ async function ensureCarrierSourceCached(asset) {
       speed: asset.speed,
       model: asset.model,
       language_hints: ['zh'],
-      instruction: '请用广东话表达。',
+      instruction: ttsInstructionForVoice(ttsVoice) || undefined,
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1646,7 +1659,7 @@ async function fetchTeachingTtsFromProvider(asset) {
       model: asset.model,
       format: asset.format,
       sample_rate: 24000,
-      instruction: '请用广东话表达。',
+      instruction: ttsInstructionForVoice(ttsVoice) || undefined,
       language_hints: ['zh'],
     }),
   }, `teaching-${asset.type}`);
@@ -1805,7 +1818,7 @@ async function prewarmTeachingAssets(reason = 'preprocess') {
 }
 
 function scheduleTeachingAssetPrewarm(reason = 'preprocess') {
-  if (!onlineTtsEnabled || !cacheAvailable) return;
+  if (!AUTO_PREWARM_TEACHING_ASSETS || !onlineTtsEnabled || !cacheAvailable) return;
   setTimeout(() => { prewarmTeachingAssets(reason).catch(e => debugLog('teaching-prewarm:error', { reason, error: e.message })); }, 0);
 }
 
@@ -1822,7 +1835,7 @@ async function fetchPreprocessChunk(chunk, label) {
   const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: chunk, voice: ttsVoice }),
+    body: JSON.stringify({ text: chunk, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
   }, label);
   if (!resp.ok) {
     let msg = '预处理失败: ' + resp.status;
@@ -1862,7 +1875,7 @@ async function fetchPreprocessClip(text) {
   const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: ttsVoice }),
+    body: JSON.stringify({ text, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
   }, 'preprocess-clip');
   if (!resp.ok) {
     let msg = '预处理clip失败: ' + resp.status;
@@ -2537,13 +2550,13 @@ preprocessBtn.addEventListener('click', async () => {
     preprocessFill.style.width = '100%';
     const covered = allCharTime.filter(Boolean).length;
     const spokenTotal = chunks.reduce((sum, c) => sum + charLen(c.text), 0);
-    const teachingAssetMode = { mode: 'queued-prewarm', charAudio: true, wordAudio: true, charSource: 'context-carrier', sourceCache: true, clickFetch: false };
+    const teachingAssetMode = { mode: 'sentence-timeline', charAudio: false, wordAudio: false, sentenceTimestamp: true, clickFetch: false };
     debugLog('preprocess:mvp-teaching-assets', teachingAssetMode);
     debugLog('preprocess:complete', { chunks: chunks.length, audioKB: Math.round(combinedPcm.length / 1024), covered, total: totalChars, spokenTotal, teachingAssetMode, sources: sourceCounts(allCharSource), diagnostics: analyzeAlignment().riskCounts || null });
     renderDebugPanel();
-    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳，教学音频队列已启动)`;
+    statusBar.textContent = `✅ ${chunks.length}批完成 (${(combinedPcm.length/1024).toFixed(0)}KB, ${covered}/${spokenTotal}字有时间戳)`;
     scheduleTeachingAssetPrewarm('preprocess-complete');
-    showToast('完成，教学音频后台生成中');
+    showToast('完成，句内时间线已生成');
   } catch (e) {
     statusBar.textContent = '❌ ' + e.message;
     debugLog('preprocess:error', { error: e.message });
@@ -3370,26 +3383,9 @@ async function playWord(si, wi) {
     if (!ensureSongDataCurrent('play-word')) return;
     const rate = parseFloat(speedRange.value);
     const wLen = charLen(w.text);
-    if (wLen <= 1 && !ONLINE_CHAR_AUDIO_ENABLED) {
-      const contextOk = await playTeachingContextForChar(w, rate, token, { sentence: s, si, wi }, { allowFetch: false });
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token });
-      if (contextOk) return;
-      debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'char-context-asset-missing' });
-      openDebugPanelForIssue('char-context-asset-missing');
-      statusBar.textContent = `⚠ "${w.text}" 单字独立音频已停用，暂未找到上下文教学音频`;
-      return;
-    }
-
-    const assetRoute = wLen <= 1 ? 'char-audio' : 'word-audio';
-    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: false });
-    if (!isPlaybackCurrent(token)) return;
-    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: assetRoute, ok: assetOk, token });
-    if (assetOk) return;
-
     const songRangeReliability = contextRangeReliability(songData, w.start, w.end);
     if (songRangeReliability.ok) {
-      const fallbackOk = await playCharRange(w.start, w.end, rate, {
+      const timelineOk = await playCharRange(w.start, w.end, rate, {
         guardNeighbors: true,
         neighborBorrowMs: wLen <= 1 ? 42 : 34,
         prePadMs: wLen <= 1 ? 42 : 34,
@@ -3398,18 +3394,24 @@ async function playWord(si, wi) {
         rejectBelowMs: wLen <= 1 ? 170 : 120,
         snapToLowEnergy: true,
         token,
-        debug: { route: 'sentence-subtitle-fallback', kind: 'word', si, wi, text: w.text }
+        debug: { route: 'sentence-timeline-primary', kind: 'word', si, wi, text: w.text }
       });
       if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'sentence-subtitle-fallback', ok: fallbackOk, token });
-      if (fallbackOk) return;
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'sentence-timeline-primary', ok: timelineOk, token });
+      if (timelineOk) return;
     } else {
-      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'sentence-subtitle-fallback', reason: songRangeReliability.reason || 'low-confidence-song-range', reliability: songRangeReliability, token });
+      debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'sentence-timeline-primary', reason: songRangeReliability.reason || 'low-confidence-song-range', reliability: songRangeReliability, token });
     }
 
-    debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'teaching-asset-and-sentence-fallback-failed' });
-    openDebugPanelForIssue('word-teaching-asset-failed');
-    statusBar.textContent = `⚠ "${w.text}" 教学音频生成失败，请复制调试报告`;
+    const assetRoute = wLen <= 1 ? 'char-audio' : 'word-audio';
+    const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: false });
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: assetRoute, ok: assetOk, token });
+    if (assetOk) return;
+
+    debugLog('play:reliable-audio-missing', { kind: 'word', si, wi, text: w.text, token, reason: 'sentence-timeline-and-cache-asset-failed' });
+    openDebugPanelForIssue('word-sentence-timeline-failed');
+    statusBar.textContent = `⚠ "${w.text}" 时间线裁切失败，请复制调试报告`;
     return;
   }
   debugLog('play:fallback', { kind: 'word', si, wi, text: w.text, route: 'speak-one-cached', token });
