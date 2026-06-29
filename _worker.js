@@ -470,7 +470,7 @@ async function runCosyWsTask(env, apiKey, request) {
       finished = true;
       clearTimeout(timeout);
       closeWsQuietly(ws);
-      resolve({ bytes: concatByteChunks(chunks), data: lastData, chunks: chunks.length, events, outputs, words, taskId, wsUrl });
+      resolve({ bytes: concatByteChunks(chunks), data: lastData, chunks: chunks.length, events, outputs, words, parameters, taskId, wsUrl });
     };
 
     ws.addEventListener('message', async (event) => {
@@ -557,7 +557,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
     throw ttsProviderError(`CosyVoice WebSocket returned no audio: events=${out.events.join(',')}; task=${out.taskId}`, 502);
   }
   const audioDebug = validateAudioBytes(out.bytes, audioFormat);
-  return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, audioDebug, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, taskId: out.taskId };
+  return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, parameters: out.parameters, audioDebug, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, taskId: out.taskId };
 }
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
@@ -1044,11 +1044,14 @@ export default {
       const text = url.searchParams.get('text') || '说';
       const py = url.searchParams.get('py') || 'shuo1';
       const jp = url.searchParams.get('jp') || 'syut3';
+      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longanhuan_v3';
+      const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
+      const runAll = url.searchParams.get('all') === '1';
       const instruction = env.COSYVOICE_INSTRUCTION || '请用广东话表达。';
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}，字。` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
-      const variants = single ? [
+      const allVariants = single ? [
         { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
         { id: 'carrier-pinyin', label: `教学载体 + 普通话拼音 hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
         { id: 'carrier-jyutping', label: `教学载体 + 粤拼 hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
@@ -1057,13 +1060,14 @@ export default {
         { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
         { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ];
+      const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];
       for (const v of variants) {
         try {
           const out = await cosyVoiceTts(env, {
             ...v.body,
-            voice: env.COSYVOICE_VOICE || 'longanhuan_v3',
-            model: env.COSYVOICE_MODEL || 'cosyvoice-v3-flash',
+            voice: debugVoice,
+            model: debugModel,
             format: 'wav',
             sample_rate: 24000,
             speed: single ? 0.78 : undefined,
@@ -1091,12 +1095,12 @@ export default {
               clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found', fallback: energyClip.range, bytes: energyClip.bytes.length, audioDebug: getAudioDebug(energyClip.bytes) };
             }
           }
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice }, null, 2))}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, parameters: out.parameters, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice, runAll }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><button>生成</button></form><p>目标：单字使用一次 API 的教学载体生成，验证 word timestamp 与裁切目标字；非单字仍比较 hot_fix。</p>${rows.join('')}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用；加 <code>all=1</code> 才比较 hot_fix。重点检查 parameters.word_timestamp_enabled 与 outputs/words。</p>${rows.join('')}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
