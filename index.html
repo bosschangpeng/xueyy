@@ -3387,11 +3387,12 @@ async function playWord(si, wi) {
     if (songRangeReliability.ok) {
       const timelineOk = await playCharRange(w.start, w.end, rate, {
         guardNeighbors: true,
-        neighborBorrowMs: wLen <= 1 ? 42 : 34,
-        prePadMs: wLen <= 1 ? 42 : 34,
-        postPadMs: wLen <= 1 ? 90 : 70,
-        minMs: wLen <= 1 ? 240 : 210,
-        rejectBelowMs: wLen <= 1 ? 170 : 120,
+        neighborBorrowMs: wLen <= 1 ? 72 : 34,
+        prePadMs: wLen <= 1 ? 70 : 34,
+        postPadMs: wLen <= 1 ? 150 : 70,
+        minMs: wLen <= 1 ? 320 : 210,
+        rejectBelowMs: wLen <= 1 ? 110 : 120,
+        boundaryMinSliceMs: wLen <= 1 ? 260 : undefined,
         snapToLowEnergy: true,
         token,
         debug: { route: 'sentence-timeline-primary', kind: 'word', si, wi, text: w.text }

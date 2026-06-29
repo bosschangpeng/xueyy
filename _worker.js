@@ -257,12 +257,26 @@ function makePcmWav(pcm, sampleRate, channels, bitsPerSample) {
   return out;
 }
 
-function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80) {
+function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80, opts = {}) {
   const info = parseWavInfo(bytes);
   if (!info) throw ttsProviderError('WAV crop only supports PCM wav', 502);
   const bytesPerMs = info.sampleRate * info.blockAlign / 1000;
-  let start = Math.max(0, Math.floor((startMs - padStartMs) * bytesPerMs));
-  let end = Math.min(info.dataSize, Math.ceil((endMs + padEndMs) * bytesPerMs));
+  const durationMs = info.dataSize / bytesPerMs;
+  let clipStartMs = Math.max(0, startMs - padStartMs);
+  let clipEndMs = Math.min(durationMs, endMs + padEndMs);
+  const minDurationMs = Number(opts.minDurationMs || 0);
+  if (minDurationMs && clipEndMs - clipStartMs < minDurationMs) {
+    const mid = (startMs + endMs) / 2;
+    const half = minDurationMs / 2;
+    clipStartMs = Math.max(0, mid - half);
+    clipEndMs = Math.min(durationMs, mid + half);
+    if (clipEndMs - clipStartMs < minDurationMs) {
+      if (clipStartMs <= 0) clipEndMs = Math.min(durationMs, clipStartMs + minDurationMs);
+      else if (clipEndMs >= durationMs) clipStartMs = Math.max(0, clipEndMs - minDurationMs);
+    }
+  }
+  let start = Math.max(0, Math.floor(clipStartMs * bytesPerMs));
+  let end = Math.min(info.dataSize, Math.ceil(clipEndMs * bytesPerMs));
   start -= start % info.blockAlign;
   end -= end % info.blockAlign;
   if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
@@ -1200,7 +1214,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 8, 24);
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320 });
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
