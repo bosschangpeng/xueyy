@@ -371,6 +371,10 @@ function charLen(text) {
   return textChars(text).length;
 }
 
+function isTimelineSoftBoundaryChar(ch) {
+  const value = String(ch || '');
+  return !value.trim() || /^[\p{P}\p{S}]$/u.test(value);
+}
 function bytesPerMsFor(sr, ch, bits) {
   return sr * ch * (bits / 8) / 1000;
 }
@@ -618,14 +622,28 @@ async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {})
     debugLog('audio:slice-reject', { ...debugMeta, reason: 'bad-byte-range', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sb, eb, pcmBytes: pcm.length, boundary });
     return false;
   }
-  const slice = pcm.slice(sb, Math.min(eb, pcm.length));
+  let slice = pcm.slice(sb, Math.min(eb, pcm.length));
   if (slice.length < 100) {
     debugLog('audio:slice-reject', { ...debugMeta, reason: 'slice-too-short', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sliceBytes: slice.length, boundary });
     return false;
   }
+  const rawSliceBytes = slice.length;
+  const minOutputMs = Number(opts.minOutputMs || 0);
+  let tailSilenceMs = 0;
+  if (minOutputMs) {
+    const rawSliceMs = rawSliceBytes / bytesPerMs;
+    if (rawSliceMs < minOutputMs) {
+      const silence = makeSilencePcm(minOutputMs - rawSliceMs, sr, ch, bits);
+      const padded = new Uint8Array(slice.length + silence.length);
+      padded.set(slice);
+      padded.set(silence, slice.length);
+      slice = padded;
+      tailSilenceMs = Math.round(silence.length / bytesPerMs);
+    }
+  }
   const holdMs = Math.max(0, opts.holdMs || 0);
-  debugLog('audio:slice', { ...debugMeta, startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), prePad, postPad, holdMs, sb, eb: Math.min(eb, pcm.length), sliceBytes: slice.length, boundary });
-  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token, { ...debugMeta, pcmMs: Math.round(slice.length / bytesPerMs), holdMs });
+  debugLog('audio:slice', { ...debugMeta, startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), prePad, postPad, holdMs, minOutputMs, tailSilenceMs, sb, eb: Math.min(eb, pcm.length), rawSliceBytes, sliceBytes: slice.length, boundary });
+  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token, { ...debugMeta, pcmMs: Math.round(slice.length / bytesPerMs), holdMs, tailSilenceMs });
 }
 
 async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
@@ -653,27 +671,33 @@ async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
     return false;
   }
   const rawInfo = timingInfoForRange(startChar, endChar, source);
+  const sourceDurationMs = pcm.length / bytesPerMsFor(sr, ch, bits);
+  const sourceChars = textChars(source.text || inputEl?.value?.trim?.() || '');
   let guardStartMs = 0;
-  let guardEndMs = pcm.length / bytesPerMsFor(sr, ch, bits);
+  let guardEndMs = sourceDurationMs;
   if (opts.guardNeighbors) {
     for (let i = startChar - 1; i >= 0; i--) {
-      if (charTime[i]) {
-        guardStartMs = Math.max(0, charTime[i][1] - (opts.neighborBorrowMs ?? 35));
-        break;
-      }
+      if (!charTime[i]) continue;
+      if (opts.ignoreSoftBoundaryNeighbors && isTimelineSoftBoundaryChar(sourceChars[i])) continue;
+      guardStartMs = Math.max(0, charTime[i][1] - (opts.neighborBorrowMs ?? 35));
+      break;
     }
     for (let i = endChar; i < charTime.length; i++) {
-      if (charTime[i]) {
-        guardEndMs = charTime[i][0] + (opts.neighborBorrowMs ?? 35);
-        break;
-      }
+      if (!charTime[i]) continue;
+      if (opts.ignoreSoftBoundaryNeighbors && isTimelineSoftBoundaryChar(sourceChars[i])) continue;
+      guardEndMs = charTime[i][0] + (opts.neighborBorrowMs ?? 35);
+      break;
     }
   }
   const minMs = opts.minMs ?? ((endChar - startChar) <= 1 ? 220 : 160);
   if (endMs - startMs < minMs) {
     const mid = (startMs + endMs) / 2;
     startMs = Math.max(0, mid - minMs / 2);
-    endMs = mid + minMs / 2;
+    endMs = Math.min(sourceDurationMs, mid + minMs / 2);
+    if (endMs - startMs < minMs) {
+      if (startMs <= 0) endMs = Math.min(sourceDurationMs, startMs + minMs);
+      else if (endMs >= sourceDurationMs) startMs = Math.max(0, endMs - minMs);
+    }
   }
   if (opts.guardNeighbors) {
     startMs = Math.max(guardStartMs, startMs);
@@ -3387,12 +3411,14 @@ async function playWord(si, wi) {
     if (songRangeReliability.ok) {
       const timelineOk = await playCharRange(w.start, w.end, rate, {
         guardNeighbors: true,
-        neighborBorrowMs: wLen <= 1 ? 72 : 34,
-        prePadMs: wLen <= 1 ? 70 : 34,
-        postPadMs: wLen <= 1 ? 150 : 70,
-        minMs: wLen <= 1 ? 320 : 210,
-        rejectBelowMs: wLen <= 1 ? 110 : 120,
-        boundaryMinSliceMs: wLen <= 1 ? 260 : undefined,
+        neighborBorrowMs: wLen <= 1 ? 170 : 34,
+        prePadMs: wLen <= 1 ? 90 : 34,
+        postPadMs: wLen <= 1 ? 260 : 70,
+        minMs: wLen <= 1 ? 520 : 210,
+        rejectBelowMs: wLen <= 1 ? 90 : 120,
+        boundaryMinSliceMs: wLen <= 1 ? 420 : undefined,
+        minOutputMs: wLen <= 1 ? 1000 : 0,
+        ignoreSoftBoundaryNeighbors: wLen <= 1,
         snapToLowEnergy: true,
         token,
         debug: { route: 'sentence-timeline-primary', kind: 'word', si, wi, text: w.text }

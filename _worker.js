@@ -280,7 +280,19 @@ function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80, opts
   start -= start % info.blockAlign;
   end -= end % info.blockAlign;
   if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
-  const pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
+  let pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
+  const tailSilenceToMs = Number(opts.tailSilenceToMs || 0);
+  if (tailSilenceToMs) {
+    const currentMs = pcm.length / bytesPerMs;
+    if (currentMs < tailSilenceToMs) {
+      const silenceBytes = Math.max(0, Math.round((tailSilenceToMs - currentMs) * bytesPerMs));
+      const silence = new Uint8Array(silenceBytes - (silenceBytes % info.blockAlign));
+      const padded = new Uint8Array(pcm.length + silence.length);
+      padded.set(pcm);
+      padded.set(silence, pcm.length);
+      pcm = padded;
+    }
+  }
   return makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample);
 }
 function cropFirstActiveWavSegment(bytes) {
@@ -1214,7 +1226,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320 });
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 80, 260, { tailSilenceToMs: 1000 });
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
