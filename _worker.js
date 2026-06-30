@@ -280,19 +280,7 @@ function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80, opts
   start -= start % info.blockAlign;
   end -= end % info.blockAlign;
   if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
-  let pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
-  const tailSilenceToMs = Number(opts.tailSilenceToMs || 0);
-  if (tailSilenceToMs) {
-    const currentMs = pcm.length / bytesPerMs;
-    if (currentMs < tailSilenceToMs) {
-      const silenceBytes = Math.max(0, Math.round((tailSilenceToMs - currentMs) * bytesPerMs));
-      const silence = new Uint8Array(silenceBytes - (silenceBytes % info.blockAlign));
-      const padded = new Uint8Array(pcm.length + silence.length);
-      padded.set(pcm);
-      padded.set(silence, pcm.length);
-      pcm = padded;
-    }
-  }
+  const pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
   return makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample);
 }
 function cropFirstActiveWavSegment(bytes) {
@@ -525,7 +513,6 @@ async function runCosyWsTask(env, apiKey, request) {
     word_timestamp_enabled: !!request.wordTimestampEnabled,
   };
   if (request.instruction) parameters.instruction = request.instruction;
-  if (request.pronunciationDict) parameters.pronunciation_dict = request.pronunciationDict;
   if (request.hotFix) parameters.hot_fix = request.hotFix;
 
   const runTask = {
@@ -642,7 +629,6 @@ async function cosyVoiceTts(env, body, opts = {}) {
     enableAigcTag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
     enableSsml: body.enable_ssml || opts.enable_ssml,
     wordTimestampEnabled: body.word_timestamp_enabled || opts.word_timestamp_enabled,
-    pronunciationDict: body.pronunciation_dict || opts.pronunciation_dict || null,
     hotFix: body.hot_fix || opts.hot_fix || null,
     instruction,
     model,
@@ -1195,20 +1181,16 @@ export default {
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
       const instruction = debugVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
       const single = isSingleCjk(text);
-      const carrierText = single ? `${text}\uFF0C\u5B57\u3002` : text;
-      const jpTone = jp ? `${text}/(${jp})` : '';
-      const jpInstruction = jp ? `Please read the Chinese text in Cantonese, and pronounce ${text} as Jyutping ${jp}. Do not spell out the romanization.` : '';
+      const carrierText = single ? `${text}，字。` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const allVariants = single ? [
-        { id: 'carrier', label: `Carrier: ${carrierText}`, body: baseBody },
-        { id: 'carrier-jyutping-dict', label: `Carrier + pronunciation_dict: ${jp}`, body: { ...baseBody, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
-        { id: 'carrier-jyutping-instruction', label: `Carrier + instruction jyutping: ${jp}`, body: { ...baseBody, instruction: jpInstruction || undefined } },
-        { id: 'carrier-jyutping-hotfix', label: `Carrier + jyutping hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
+        { id: 'carrier-pinyin', label: `教学载体 + 普通话拼音 hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'carrier-jyutping', label: `教学载体 + 粤拼 hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ] : [
-        { id: 'plain', label: 'No override', body: { text } },
-        { id: 'jyutping-dict', label: `pronunciation_dict: ${jp}`, body: { text, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
-        { id: 'jyutping-instruction', label: `Instruction jyutping: ${jp}`, body: { text, instruction: jpInstruction || undefined } },
-        { id: 'jyutping-hotfix', label: `Jyutping hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'plain', label: '不指定读音', body: { text } },
+        { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];
@@ -1232,7 +1214,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 80, 260, { tailSilenceToMs: 1000 });
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320 });
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
