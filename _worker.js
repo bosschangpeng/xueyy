@@ -1,9 +1,9 @@
-// 粤语学习助手 — 密码 + 邀请码双验证 + CosyVoice TTS代理
+// 粤语学习助手 — 密码 + 邀请码双验证 + Qwen TTS代理
 // ACCESS_PWD = 管理员密码（永久有效，不消耗）
 // ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
 // DASHSCOPE_API_KEY = 阿里云百炼 DashScope API Key
-// COSYVOICE_MODEL = 可选，默认 cosyvoice-v3-flash
-// COSYVOICE_VOICE = optional, defaults to longanyue_v3
+// QWEN_TTS_MODEL = optional, defaults to qwen3-tts-flash
+// QWEN_TTS_VOICE = optional, defaults to Rocky
 // KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
@@ -13,10 +13,8 @@ const TTS_REQUEST_INTERVAL_MS = Math.ceil(60000 / TTS_RPM_LIMIT) + 100;
 const TTS_RATE_LIMIT_RETRY_MS = 65000;
 let ttsNextRequestAt = 0;
 let ttsQueue = Promise.resolve();
-const COSY_LONGANYUE_VOLUME = 80;
-const COSY_LONGANYUE_PITCH = 0.94;
-const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
-const COSY_LONGANYUE_DEBUG_SPEED = 0.78;
+const QWEN_TTS_DEFAULT_MODEL = 'qwen3-tts-flash';
+const QWEN_TTS_DEFAULT_VOICE = 'Rocky';
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -55,16 +53,16 @@ function defaultCosyInstruction(env, voice) {
   return '';
 }
 
-function defaultCosyVolume(voice) {
-  return voice === 'longanyue_v3' ? COSY_LONGANYUE_VOLUME : 50;
+function defaultCosyVolume(_voice) {
+  return 50;
 }
 
-function defaultCosyPitch(voice) {
-  return voice === 'longanyue_v3' ? COSY_LONGANYUE_PITCH : 1.0;
+function defaultCosyPitch(_voice) {
+  return 1.0;
 }
 
-function defaultCosyPreprocessSpeed(voice) {
-  return voice === 'longanyue_v3' ? COSY_LONGANYUE_PREPROCESS_SPEED : 0.85;
+function defaultCosyPreprocessSpeed(_voice) {
+  return 0.85;
 }
 
 const PAGE = (msg) => `<!DOCTYPE html>
@@ -675,6 +673,247 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const audioDebug = validateAudioBytes(out.bytes, audioFormat);
   return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, parameters: out.parameters, audioDebug, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, taskId: out.taskId };
 }
+
+function qwenTtsGenerationUrl(env) {
+  const explicit = env.QWEN_TTS_GENERATION_URL || env.DASHSCOPE_GENERATION_URL || '';
+  if (explicit) return explicit;
+  const workspaceId = env.DASHSCOPE_WORKSPACE_ID || env.QWEN_TTS_WORKSPACE_ID || env.ALIYUN_WORKSPACE_ID || '';
+  const region = env.DASHSCOPE_REGION || env.QWEN_TTS_REGION || 'cn-beijing';
+  if (workspaceId) return `https://${workspaceId}.${region}.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`;
+  return 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+}
+
+function normalizeQwenVoice(voice) {
+  const raw = String(voice || '').trim();
+  if (!raw || /^longan/i.test(raw) || /^cosy/i.test(raw)) return QWEN_TTS_DEFAULT_VOICE;
+  return raw;
+}
+
+function normalizeQwenModel(model) {
+  const raw = String(model || '').trim();
+  if (!raw || /^cosyvoice/i.test(raw)) return QWEN_TTS_DEFAULT_MODEL;
+  return raw;
+}
+
+function normalizeQwenText(text) {
+  const raw = String(text || '').trim();
+  if (isSingleCjk(raw)) return raw + '\u3002';
+  return raw;
+}
+
+function qwenAudioUrlFromResponse(data) {
+  const audio = data?.output?.audio;
+  if (typeof audio === 'string' && /^https?:/i.test(audio)) return audio;
+  return audio?.url || data?.output?.audio_url || data?.output?.url || data?.audio?.url || data?.url || '';
+}
+
+function qwenAudioBytesFromResponse(data) {
+  const audio = data?.output?.audio || data?.audio || {};
+  for (const value of [audio.data, audio.audio, audio.base64, data?.output?.audio_data, data?.audio_data]) {
+    const bytes = decodeAudioPayload(value);
+    if (bytes?.length) return bytes;
+  }
+  return null;
+}
+
+async function qwenTts(env, body, opts = {}) {
+  const apiKey = env.DASHSCOPE_API_KEY || env.QWEN_TTS_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
+  if (!apiKey) throw new Error('Qwen TTS not configured: missing DASHSCOPE_API_KEY');
+  await waitForTtsSlot('qwenTts');
+
+  const model = normalizeQwenModel(body.model || opts.model || env.QWEN_TTS_MODEL || env.DASHSCOPE_TTS_MODEL || QWEN_TTS_DEFAULT_MODEL);
+  const voice = normalizeQwenVoice(body.voice || opts.voice || env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE);
+  const requestText = normalizeQwenText(body.text);
+  if (!requestText) throw ttsProviderError('Qwen TTS text is empty', 400);
+  const generationUrl = qwenTtsGenerationUrl(env);
+  const payload = {
+    model,
+    input: {
+      text: requestText,
+      voice,
+      language_type: body.language_type || opts.language_type || 'Chinese',
+    },
+  };
+  const resp = await fetch(generationUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json',
+      'User-Agent': 'xueyy-qwen-tts-worker/1.0',
+    },
+    body: JSON.stringify(payload),
+  });
+  const responseText = await resp.text();
+  let data = null;
+  try { data = responseText ? JSON.parse(responseText) : {}; } catch {}
+  if (!resp.ok) {
+    const msg = data?.message || data?.error?.message || data?.code || responseText.slice(0, 240) || `HTTP ${resp.status}`;
+    throw ttsProviderError(`Qwen TTS request failed: ${msg}`, resp.status || 502);
+  }
+  if (!data) throw ttsProviderError(`Qwen TTS returned non-json response: ${responseText.slice(0, 120)}`, 502);
+
+  let bytes = qwenAudioBytesFromResponse(data);
+  const audioUrl = qwenAudioUrlFromResponse(data);
+  const events = ['http:generation'];
+  let audioContentType = '';
+  if (!bytes?.length && audioUrl) {
+    const audioResp = await fetch(audioUrl);
+    if (!audioResp.ok) throw ttsProviderError(`Qwen TTS audio download failed: ${audioResp.status}`, audioResp.status || 502);
+    audioContentType = audioResp.headers.get('Content-Type') || '';
+    bytes = new Uint8Array(await audioResp.arrayBuffer());
+    events.push('audio:url-download');
+  }
+  if (!bytes?.length) throw ttsProviderError('Qwen TTS returned no audio URL or audio payload', 502);
+  const format = 'wav';
+  const audioDebug = validateAudioBytes(bytes, format);
+  const parameters = {
+    voice,
+    model,
+    endpoint: generationUrl,
+    audio_url: audioUrl ? 'present' : '',
+    audio_content_type: audioContentType,
+    language_type: payload.input.language_type,
+  };
+  return {
+    data,
+    bytes,
+    format,
+    model,
+    voice,
+    sampleRate: Number(body.sample_rate || opts.sample_rate || 24000),
+    provider: 'qwen-tts-http',
+    requestText,
+    parameters,
+    audioDebug,
+    chunks: 1,
+    events,
+    words: [],
+    outputs: data?.output ? [data.output] : [],
+    taskId: data?.request_id || data?.output?.task_id || '',
+  };
+}
+
+function isPunctuationChar(ch) {
+  return /[\u3000\s，、。！？；：,.!?;:]/u.test(String(ch || ''));
+}
+
+function charTimelineWeight(ch) {
+  if (!ch) return 0;
+  if (/\s/u.test(ch)) return 0.06;
+  if (/[。！？.!?]/u.test(ch)) return 0.22;
+  if (/[，、；：,;:]/u.test(ch)) return 0.16;
+  if (/[\u3400-\u9fff]/u.test(ch)) return 1.0;
+  return 0.62;
+}
+
+function activeSpeechBoundsFromWav(bytes, info) {
+  if (!info || info.bitsPerSample !== 16) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const frameBytes = info.blockAlign;
+  const totalFrames = Math.floor(info.dataSize / frameBytes);
+  if (!totalFrames) return null;
+  const windowFrames = Math.max(1, Math.floor(info.sampleRate * 0.018));
+  let peak = 0;
+  const windows = [];
+  for (let start = 0; start < totalFrames; start += windowFrames) {
+    const end = Math.min(totalFrames, start + windowFrames);
+    let sum = 0, count = 0;
+    for (let f = start; f < end; f++) {
+      const offset = info.dataOffset + f * frameBytes;
+      for (let ch = 0; ch < info.channels; ch++) {
+        sum += Math.abs(view.getInt16(offset + ch * 2, true));
+        count++;
+      }
+    }
+    const e = count ? sum / count : 0;
+    peak = Math.max(peak, e);
+    windows.push({ start, end, e });
+  }
+  if (!windows.length || peak <= 0) return null;
+  const threshold = Math.max(180, peak * 0.10);
+  let first = -1, last = -1;
+  for (const w of windows) {
+    if (w.e >= threshold) {
+      if (first < 0) first = w.start;
+      last = w.end;
+    }
+  }
+  if (first < 0 || last <= first) return null;
+  const durationMs = info.dataSize / (info.sampleRate * info.blockAlign / 1000);
+  return {
+    startMs: Math.max(0, Math.round(first * 1000 / info.sampleRate) - 24),
+    endMs: Math.min(durationMs, Math.round(last * 1000 / info.sampleRate) + 80),
+    peak: Math.round(peak),
+    threshold: Math.round(threshold),
+  };
+}
+
+function buildCharTimeFromQwenEstimate(bytes, text, wavInfo) {
+  const chars = Array.from(text || '');
+  const info = wavInfo || parseWavInfo(bytes);
+  const charTime = new Array(chars.length);
+  const sources = new Array(chars.length);
+  const groups = new Array(chars.length);
+  if (!info || !chars.length) return { charTime, sources, groups, active: null };
+  const audioDurationMs = info.dataSize / (info.sampleRate * info.blockAlign / 1000);
+  const active = activeSpeechBoundsFromWav(bytes, info);
+  const startMs = active ? active.startMs : 0;
+  const endMs = active ? active.endMs : audioDurationMs;
+  const spanMs = Math.max(1, endMs - startMs);
+  const weights = chars.map(charTimelineWeight);
+  let totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  if (!(totalWeight > 0)) totalWeight = chars.length || 1;
+  let cursor = startMs;
+  for (let i = 0; i < chars.length; i++) {
+    const w = weights[i] || (1 / Math.max(1, chars.length));
+    const next = i === chars.length - 1 ? endMs : cursor + spanMs * (w / totalWeight);
+    charTime[i] = [cursor, Math.max(cursor + 1, next)];
+    sources[i] = isPunctuationChar(chars[i]) ? 'qwen_punct_est' : 'qwen_char_est';
+    groups[i] = `qwen-est:${i}`;
+    cursor = next;
+  }
+  return { charTime, sources, groups, active };
+}
+
+function qwenEstimatedTargetWord(bytes, carrierText, target) {
+  const wav = parseWavInfo(bytes);
+  if (!wav) return null;
+  const timeline = buildCharTimeFromQwenEstimate(bytes, carrierText, wav);
+  const chars = Array.from(carrierText || '');
+  const targetChars = Array.from(String(target || ''));
+  if (!targetChars.length) return null;
+  let idx = -1;
+  for (let i = 0; i <= chars.length - targetChars.length; i++) {
+    let ok = true;
+    for (let j = 0; j < targetChars.length; j++) if (chars[i + j] !== targetChars[j]) ok = false;
+    if (ok) { idx = i; break; }
+  }
+  if (idx < 0) return null;
+  const first = timeline.charTime[idx];
+  const last = timeline.charTime[idx + targetChars.length - 1];
+  if (!first || !last) return null;
+  return {
+    text: target,
+    begin_index: idx,
+    end_index: idx + targetChars.length,
+    begin_time: first[0],
+    end_time: last[1],
+    source: 'qwen-estimated-char',
+    active: timeline.active,
+  };
+}
+
+function summarizeQwenTimeline(timeline, text) {
+  const chars = Array.from(text || '');
+  return chars.slice(0, 80).map((ch, idx) => ({
+    idx,
+    text: ch,
+    begin_time: timeline.charTime[idx]?.[0],
+    end_time: timeline.charTime[idx]?.[1],
+    source: timeline.sources[idx],
+  }));
+}
+
 function hexToBytes(hex) {
   return new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
 }
@@ -1087,35 +1326,24 @@ function escapeAttr(value) {
 async function preprocessTts(env, body) {
   const text = String(body?.text || '').trim();
   if (!text) throw ttsProviderError('预处理文本不能为空', 400);
-  const voice = body?.voice || env.COSYVOICE_VOICE || 'longanyue_v3';
-  const model = body?.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
-  const speed = Number(body?.speed ?? body?.rate ?? defaultCosyPreprocessSpeed(voice));
+  const voice = normalizeQwenVoice(body?.voice || env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE);
+  const model = normalizeQwenModel(body?.model || env.QWEN_TTS_MODEL || QWEN_TTS_DEFAULT_MODEL);
   const sampleRate = Number(body?.sample_rate || 24000);
-  const instruction = body?.instruction != null ? body.instruction : defaultCosyInstruction(env, voice);
 
-  const out = await cosyVoiceTts(env, {
+  const out = await qwenTts(env, {
     text,
     voice,
     model,
     format: 'wav',
     sample_rate: sampleRate,
-    speed,
-    volume: body?.volume,
-    pitch: body?.pitch,
-    language_hints: ['zh'],
-    word_timestamp_enabled: true,
-    instruction,
   });
   const wav = parseWavInfo(out.bytes);
-  if (!wav) throw ttsProviderError('CosyVoice 预处理仅支持 PCM WAV 输出', 502);
-  if (!Array.isArray(out.words) || !out.words.length) {
-    throw ttsProviderError(`CosyVoice 未返回字词时间戳: voice=${voice}; events=${out.events.join(',')}`, 502);
-  }
+  if (!wav) throw ttsProviderError('Qwen TTS 预处理仅支持 PCM WAV 输出', 502);
   const audioDurationMs = wav.dataSize / (wav.sampleRate * wav.blockAlign / 1000);
-  const timeline = buildCharTimeFromCosyWords(out.words, text, audioDurationMs);
+  const timeline = buildCharTimeFromQwenEstimate(out.bytes, text, wav);
   const total = Array.from(text).length;
   const covered = timeline.charTime.filter(Boolean).length;
-  if (!covered) throw ttsProviderError(`CosyVoice 时间戳无法映射到原文: voice=${voice}; words=${out.words.length}`, 502);
+  if (!covered) throw ttsProviderError(`Qwen TTS 时间线估算失败: voice=${voice}; durationMs=${Math.round(audioDurationMs)}`, 502);
   return {
     text,
     audio_hex: bytesToHex(out.bytes),
@@ -1128,8 +1356,8 @@ async function preprocessTts(env, body) {
     char_source: timeline.sources,
     char_group: timeline.groups,
     char_count: total,
-    coverage: { covered, total, sources: sourceCounts(timeline.sources) },
-    subtitle_debug: summarizeCosyWords(out.words),
+    coverage: { covered, total, sources: sourceCounts(timeline.sources), active: timeline.active, strategy: 'qwen-energy-weighted-estimate' },
+    subtitle_debug: summarizeQwenTimeline(timeline, text),
     provider: out.provider,
     voice: out.voice,
     model: out.model,
@@ -1183,17 +1411,16 @@ export default {
     // 调试端点
     if (url.pathname === '/debug-tts') {
       const results = [];
-      const apiKey = env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
-      results.push('Provider: CosyVoice');
+      const apiKey = env.DASHSCOPE_API_KEY || env.QWEN_TTS_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY || '';
+      results.push('Provider: Qwen TTS');
       results.push('Key: ' + (apiKey ? '已设('+apiKey.slice(0,6)+'...)' : '未设'));
       if (!apiKey) {
         return new Response(results.join(' | '), { headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
       }
-      // 测试 CosyVoice 请求
+      // 测试 Qwen TTS 请求
       try {
-        const healthVoice = env.COSYVOICE_VOICE || 'longanyue_v3';
-        const healthInstruction = defaultCosyInstruction(env, healthVoice);
-        const out = await cosyVoiceTts(env, { text: '你好世界', voice: healthVoice, format: 'wav', sample_rate: 24000, instruction: healthInstruction });
+        const healthVoice = env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE;
+        const out = await qwenTts(env, { text: '\u4f60\u597d\u4e16\u754c', voice: healthVoice, format: 'wav', sample_rate: 24000 });
         results.push('API: OK');
         results.push('audio: ' + out.bytes.length + ' bytes');
         results.push('model: ' + out.model);
@@ -1212,33 +1439,28 @@ export default {
       const text = url.searchParams.get('text') || '说';
       const py = url.searchParams.get('py') || 'shuo1';
       const jp = url.searchParams.get('jp') || 'syut3';
-      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longanyue_v3';
-      const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
+      const debugVoice = normalizeQwenVoice(url.searchParams.get('voice') || env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE);
+      const debugModel = normalizeQwenModel(url.searchParams.get('model') || env.QWEN_TTS_MODEL || QWEN_TTS_DEFAULT_MODEL);
       const runAll = url.searchParams.get('all') === '1';
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
-      const instruction = defaultCosyInstruction(env, debugVoice);
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}\u3002` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const allVariants = single ? [
-        { id: 'carrier', label: `Carrier: ${carrierText}`, body: baseBody },
-        { id: 'carrier-pinyin', label: `Carrier + pinyin hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'carrier', label: `Qwen carrier: ${carrierText}`, body: baseBody },
       ] : [
-        { id: 'plain', label: 'No override', body: { text } },
-        { id: 'pinyin', label: `Pinyin hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
+        { id: 'plain', label: 'Qwen TTS', body: { text } },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];
       for (const v of variants) {
         try {
-          const out = await cosyVoiceTts(env, {
+          const out = await qwenTts(env, {
             ...v.body,
             voice: debugVoice,
             model: debugModel,
             format: 'wav',
             sample_rate: 24000,
-            speed: single ? COSY_LONGANYUE_DEBUG_SPEED : undefined,
-            instruction,
           });
           let bin = '';
           for (const b of out.bytes) bin += String.fromCharCode(b);
@@ -1247,7 +1469,7 @@ export default {
           let clipHtml = '';
           let clipMeta = null;
           if (v.body.teaching_target && out.format === 'wav') {
-            const targetWord = findTargetWord(out.words, v.body.teaching_target);
+            const targetWord = findTargetWord(out.words, v.body.teaching_target) || qwenEstimatedTargetWord(out.bytes, v.body.text, v.body.teaching_target);
             if (targetWord) {
               const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 140, 240, { minDurationMs: 520, tailSilenceToMs: 900 });
               let cbin = '';
@@ -1269,7 +1491,7 @@ export default {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CosyVoice 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>CosyVoice 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用；加 <code>all=1</code> 才比较 hot_fix。只有官方 words 时间戳裁出的音频算有效；加 <code>fallback=1</code> 可查看能量裁切实验。</p>${rows.join('')}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen TTS 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>Qwen TTS 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用。Qwen TTS 没有原生 words 时间戳，裁切使用整句音频的本地能量时间线；加 <code>fallback=1</code> 可查看能量裁切实验。</p>${rows.join('')}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
@@ -1288,10 +1510,10 @@ export default {
       }
     }
 
-    // CosyVoice TTS 代理（单次请求，不再切分）
+    // Qwen TTS 代理（单次请求，不再切分）
     if (url.pathname === '/tts') {
       if (request.method === 'HEAD') {
-        return new Response(null, { status: (env.DASHSCOPE_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY) ? 200 : 500 });
+        return new Response(null, { status: (env.DASHSCOPE_API_KEY || env.QWEN_TTS_API_KEY || env.COSYVOICE_API_KEY || env.ALIYUN_API_KEY) ? 200 : 500 });
       }
       if (request.method === 'GET' || request.method === 'POST') {
         if (!(await checkAuth(request, env))) {
@@ -1301,7 +1523,7 @@ export default {
           const body = request.method === 'POST'
             ? await request.json()
             : { text: url.searchParams.get('text') || '', voice: url.searchParams.get('voice') || undefined, speed: Number(url.searchParams.get('speed') || 1) };
-          const out = await cosyVoiceTts(env, body);
+          const out = await qwenTts(env, body);
           const audioFormat = out.format || body.format || 'wav';
           const contentType = audioFormat === 'wav' ? 'audio/wav' : (audioFormat === 'pcm' ? 'audio/L16' : (audioFormat === 'opus' ? 'audio/ogg' : 'audio/mpeg'));
           return new Response(out.bytes, {
@@ -1310,7 +1532,7 @@ export default {
               'Cache-Control': 'public,max-age=31536000,immutable',
               'Content-Length': String(out.bytes.length),
               'X-Audio-Format': audioFormat,
-              'X-TTS-Provider': 'cosyvoice',
+              'X-TTS-Provider': 'qwen-tts',
               'X-TTS-Model': out.model,
               'X-TTS-Voice': out.voice,
             },

@@ -131,13 +131,13 @@ body.debug-mode .segment.dbg-unknown{outline:2px dotted rgba(127,140,141,.8);out
       <label id="soloJpWrap" style="cursor:pointer;user-select:none;display:none"><input type="checkbox" id="soloJpToggle"> 独立粤拼</label>
       <label id="onlineTtsWrap" style="cursor:pointer;user-select:none" title="开启后使用在线高精度粤语发音"><input type="checkbox" id="onlineTtsToggle"> 在线TTS</label>
       <label id="isolatedCharFallbackWrap" style="cursor:pointer;user-select:none;display:none" title="预处理模式下允许单字脱离上下文在线兜底，可能影响多音字"><input type="checkbox" id="isolatedCharFallbackToggle"> 孤字兜底</label>
-      <label id="mxVoiceWrap" style="display:none" title="CosyVoice 在线语音">☁️ <select id="mxVoiceSelect"></select></label>
+      <label id="mxVoiceWrap" style="display:none" title="Qwen TTS 在线语音">☁️ <select id="mxVoiceSelect"></select></label>
     </div>
     <div class="preprocess-row" id="preprocessRow" style="display:none;margin-top:6px">
       <span id="preprocessWarn" style="font-size:.75rem;color:#e67e22;margin-right:8px">💡 建议预处理</span>
       <div class="preprocess-bar" id="preprocessBar"><div class="fill" id="preprocessFill"></div></div>
       <span id="preprocessStat" style="font-size:.72rem;color:var(--text-light);margin-left:8px;white-space:nowrap">缓存: <span id="cacheCount">0</span>项 <button id="clearCacheBtn" class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.7rem;margin-left:6px;line-height:1.3">清缓存</button></span>
-      <button id="debugTtsBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:6px;line-height:1.3" title="测试Worker到CosyVoice连通性">🔧</button>
+      <button id="debugTtsBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:6px;line-height:1.3" title="测试Worker到Qwen TTS连通性">🔧</button>
       <button id="debugCharTimeBtn" class="btn btn-outline btn-sm" style="padding:2px 6px;font-size:.65rem;margin-left:2px;line-height:1.3" title="调试charTime对齐">🎯</button>
     </div>
   </div>
@@ -353,18 +353,15 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v4_sentence_timeline_volume80';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v3_volume80';
-const COSY_LONGANYUE_VOLUME = 80;
-const COSY_LONGANYUE_PITCH = 0.94;
-const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
-const COSY_LONGANYUE_CLIP_SPEED = 0.86;
+const ALIGN_SCHEMA_VERSION = 'ct_qwen_tts_v1_energy_timeline';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_qwen_tts_v1';
+const QWEN_TTS_PREPROCESS_SPEED = 1.0;
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const AUTO_PREWARM_TEACHING_ASSETS = false;
 const ONLINE_CHAR_AUDIO_ENABLED = true;
 const ONLINE_CHAR_AUDIO_MODE = 'direct';
-const TEACHING_ASSET_MODEL = 'cosyvoice-v3-flash';
+const TEACHING_ASSET_MODEL = 'qwen3-tts-flash';
 const TEACHING_ASSET_FORMAT = 'wav';
 
 function textChars(text) {
@@ -582,8 +579,8 @@ function preprocessChunkCacheKey(text) {
     ALIGN_SCHEMA_VERSION,
     ttsVoice,
     'preprocess-v1',
-    'cosyvoice-v3-flash',
-    ttsVoice === 'longanyue_v3' ? String(COSY_LONGANYUE_PREPROCESS_SPEED) : '0.85',
+    TEACHING_ASSET_MODEL,
+    String(QWEN_TTS_PREPROCESS_SPEED),
     text
   ].join('|'));
 }
@@ -1001,22 +998,21 @@ function stopSpeak() {
   if (currentAudioCtx && currentAudioCtx.state === 'running') currentAudioCtx.suspend();
 }
 
-// ── CosyVoice 在线 TTS + IndexedDB 缓存 ──
+// ── Qwen TTS 在线 TTS + IndexedDB 缓存 ──
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
-let ttsVoice = localStorage.getItem('mxVoice') || 'longanyue_v3';
+let ttsVoice = localStorage.getItem('mxVoice') || 'Rocky';
 let isolatedCharFallbackEnabled = false;
 localStorage.removeItem('isolatedCharFallback');
 let currentAudio = null;
 
-const MX_VOICE_MIGRATION_KEY = 'mxVoiceMaleCantoneseMigration20260630';
+const MX_VOICE_MIGRATION_KEY = 'mxVoiceQwenTtsMigration20260701';
 const MX_VOICES = [
-  { id: 'longanyue_v3', label: 'Cosy ??? ?' },
-  { id: 'longjiayi_v3', label: 'Cosy ??? ?' },
-  { id: 'longanhuan_v3', label: 'Cosy ???? ?' },
+  { id: 'Rocky', label: 'Qwen Cantonese male Rocky' },
+  { id: 'Kiki', label: 'Qwen Cantonese female Kiki' },
 ];
-if (!localStorage.getItem(MX_VOICE_MIGRATION_KEY) && (ttsVoice === 'longjiayi_v3' || ttsVoice === 'longanhuan_v3')) {
-  ttsVoice = 'longanyue_v3';
+if (!localStorage.getItem(MX_VOICE_MIGRATION_KEY) && /^longan/i.test(ttsVoice)) {
+  ttsVoice = 'Rocky';
   localStorage.setItem('mxVoice', ttsVoice);
   localStorage.setItem(MX_VOICE_MIGRATION_KEY, '1');
 }
@@ -1083,7 +1079,7 @@ onlineTtsToggle.addEventListener('change', () => {
     document.getElementById('preprocessRow').style.display = '';
     document.getElementById('preprocessBtn').style.display = '';
     initMxVoice(); updateCacheStat();
-    statusBar.textContent = '☁️ CosyVoice在线TTS模式';
+    statusBar.textContent = '☁️ Qwen TTS在线模式';
   } else {
     mxVoiceWrap.style.display = 'none';
     isolatedCharFallbackWrap.style.display = 'none';
@@ -1271,13 +1267,12 @@ async function fetchTtsProxy(path, init, label = 'tts') {
   }
 }
 
-function ttsInstructionForVoice(voice) {
-  return voice === 'longanhuan_v3' ? '\u8bf7\u7528\u5e7f\u4e1c\u8bdd\u8868\u8fbe\u3002' : '';
+function ttsInstructionForVoice(_voice) {
+  return '';
 }
 
-function cosyToneParamsForVoice(voice, opts = {}) {
-  if (voice !== 'longanyue_v3') return {};
-  const params = { volume: COSY_LONGANYUE_VOLUME, pitch: COSY_LONGANYUE_PITCH };
+function onlineTtsParamsForVoice(_voice, opts = {}) {
+  const params = {};
   if (opts.speed != null) params.speed = opts.speed;
   return params;
 }
@@ -1290,7 +1285,7 @@ async function fetchTtsFromProvider(text) {
       text,
       voice: ttsVoice,
       speed: 0.9,
-      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_CLIP_SPEED }),
+      ...onlineTtsParamsForVoice(ttsVoice),
       model: TEACHING_ASSET_MODEL,
       format: 'wav',
       sample_rate: 24000,
@@ -1298,7 +1293,7 @@ async function fetchTtsFromProvider(text) {
     }),
   }, 'tts-clip');
   if (!resp.ok) {
-    let msg = 'CosyVoice TTS failed: ' + resp.status;
+    let msg = 'Qwen TTS failed: ' + resp.status;
     try { const j = await resp.json(); if (j.error) msg = j.error; } catch {}
     throw new Error(msg);
   }
@@ -1306,7 +1301,7 @@ async function fetchTtsFromProvider(text) {
 }
 
 function normalizeCantoneseTtsText(text) {
-  return s2tConvert(String(text || '').trim());
+  return String(text || '').trim();
 }
 
 function compactTtsText(text) {
@@ -1619,7 +1614,7 @@ async function ensureCarrierSourceCached(asset) {
       speed: asset.speed,
       model: asset.model,
       language_hints: ['zh'],
-      ...cosyToneParamsForVoice(ttsVoice),
+      ...onlineTtsParamsForVoice(ttsVoice),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined,
     }),
   }, `teaching-${asset.type}`);
@@ -1694,7 +1689,7 @@ async function fetchTeachingTtsFromProvider(asset) {
       model: asset.model,
       format: asset.format,
       sample_rate: 24000,
-      ...cosyToneParamsForVoice(ttsVoice),
+      ...onlineTtsParamsForVoice(ttsVoice),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined,
       language_hints: ['zh'],
     }),
@@ -1874,7 +1869,7 @@ async function fetchPreprocessChunk(chunk, label) {
     body: JSON.stringify({
       text: chunk,
       voice: ttsVoice,
-      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_PREPROCESS_SPEED }),
+      ...onlineTtsParamsForVoice(ttsVoice, { speed: QWEN_TTS_PREPROCESS_SPEED }),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined
     }),
   }, label);
@@ -1919,7 +1914,7 @@ async function fetchPreprocessClip(text) {
     body: JSON.stringify({
       text,
       voice: ttsVoice,
-      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_PREPROCESS_SPEED }),
+      ...onlineTtsParamsForVoice(ttsVoice, { speed: QWEN_TTS_PREPROCESS_SPEED }),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined
     }),
   }, 'preprocess-clip');
@@ -2028,7 +2023,7 @@ async function speakOneCached(text, rate, token) {
     await playAudioBlob(blob, rate, token, { route: 'independent-clip-online', text });
     return true;
   } catch (e) {
-    statusBar.textContent = '⚠ CosyVoice 不可用，回退系统语音';
+    statusBar.textContent = '⚠ Qwen TTS 不可用，回退系统语音';
     debugLog('fallback:offline-system', { route: 'independent-clip', text, token, reason: e.message });
     const voice = await resolveVoice();
     if (!voice) return false;
@@ -2626,7 +2621,7 @@ document.getElementById('clearCacheBtn').addEventListener('click', async () => {
   showToast('缓存已清除，预处理数据已失效');
 });
 
-// 调试 Worker → CosyVoice 连通性
+// 调试 Worker -> Qwen TTS 连通性
 document.getElementById('debugTtsBtn').addEventListener('click', async () => {
   showToast('测试中...');
   try {
@@ -3065,7 +3060,7 @@ function buildDebugReport() {
     settings: {
       onlineTtsEnabled,
       isolatedCharFallbackEnabled,
-      ttsProvider: 'cosyvoice',
+      ttsProvider: 'qwen-tts',
       ttsVoice,
       alignVersion: ALIGN_SCHEMA_VERSION,
       teachingAssetVersion: TEACHING_ASSET_SCHEMA_VERSION,
@@ -3415,12 +3410,12 @@ async function playWord(si, wi) {
     if (wLen <= 1 && !ONLINE_CHAR_AUDIO_ENABLED) {
       const contextOk = await playTeachingContextForChar(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
       if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token, provider: 'qwen-tts', charMode: ONLINE_CHAR_AUDIO_MODE });
       if (contextOk) return;
     } else {
       const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
       if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'cosyvoice', charMode: ONLINE_CHAR_AUDIO_MODE });
+      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'qwen-tts', charMode: ONLINE_CHAR_AUDIO_MODE });
       if (assetOk) return;
     }
   }
