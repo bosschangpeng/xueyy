@@ -13,7 +13,6 @@ const TTS_REQUEST_INTERVAL_MS = Math.ceil(60000 / TTS_RPM_LIMIT) + 100;
 const TTS_RATE_LIMIT_RETRY_MS = 65000;
 let ttsNextRequestAt = 0;
 let ttsQueue = Promise.resolve();
-const COSY_LONGANYUE_CALM_INSTRUCTION = '\u8bf7\u7528\u5e73\u9759\u3001\u81ea\u7136\u3001\u67d4\u548c\u7684\u7ca4\u8bed\u6717\u8bfb\uff0c\u4e0d\u8981\u558a\u53eb\uff0c\u4e0d\u8981\u5938\u5f20\u3002';
 const COSY_LONGANYUE_VOLUME = 80;
 const COSY_LONGANYUE_PITCH = 0.94;
 const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
@@ -53,7 +52,6 @@ function ttsJsonError(e) {
 
 function defaultCosyInstruction(env, voice) {
   if (voice === 'longanhuan_v3') return env.COSYVOICE_INSTRUCTION || '\u8bf7\u7528\u5e7f\u4e1c\u8bdd\u8868\u8fbe\u3002';
-  if (voice === 'longanyue_v3') return env.COSYVOICE_LONGANYUE_INSTRUCTION || COSY_LONGANYUE_CALM_INSTRUCTION;
   return '';
 }
 

@@ -353,9 +353,8 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v3_sentence_timeline_calm80';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v2_calm80';
-const COSY_LONGANYUE_CALM_INSTRUCTION = '\u8bf7\u7528\u5e73\u9759\u3001\u81ea\u7136\u3001\u67d4\u548c\u7684\u7ca4\u8bed\u6717\u8bfb\uff0c\u4e0d\u8981\u558a\u53eb\uff0c\u4e0d\u8981\u5938\u5f20\u3002';
+const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v4_sentence_timeline_volume80';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v3_volume80';
 const COSY_LONGANYUE_VOLUME = 80;
 const COSY_LONGANYUE_PITCH = 0.94;
 const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
@@ -1273,7 +1272,6 @@ async function fetchTtsProxy(path, init, label = 'tts') {
 }
 
 function ttsInstructionForVoice(voice) {
-  if (voice === 'longanyue_v3') return COSY_LONGANYUE_CALM_INSTRUCTION;
   return voice === 'longanhuan_v3' ? '\u8bf7\u7528\u5e7f\u4e1c\u8bdd\u8868\u8fbe\u3002' : '';
 }
 
