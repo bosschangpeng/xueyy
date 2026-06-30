@@ -813,13 +813,14 @@ function charTimelineWeight(ch) {
   return 0.62;
 }
 
-function activeSpeechBoundsFromWav(bytes, info) {
+function qwenEnergyWindowsFromWav(bytes, info) {
   if (!info || info.bitsPerSample !== 16) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const frameBytes = info.blockAlign;
   const totalFrames = Math.floor(info.dataSize / frameBytes);
   if (!totalFrames) return null;
-  const windowFrames = Math.max(1, Math.floor(info.sampleRate * 0.018));
+  const windowMs = 18;
+  const windowFrames = Math.max(1, Math.floor(info.sampleRate * windowMs / 1000));
   let peak = 0;
   const windows = [];
   for (let start = 0; start < totalFrames; start += windowFrames) {
@@ -836,23 +837,160 @@ function activeSpeechBoundsFromWav(bytes, info) {
     peak = Math.max(peak, e);
     windows.push({ start, end, e });
   }
-  if (!windows.length || peak <= 0) return null;
-  const threshold = Math.max(180, peak * 0.10);
-  let first = -1, last = -1;
-  for (const w of windows) {
+  return { windows, peak, windowMs };
+}
+
+function qwenActiveSpeechAnalysisFromWav(bytes, info) {
+  const energy = qwenEnergyWindowsFromWav(bytes, info);
+  if (!energy || !energy.windows.length || energy.peak <= 0) return null;
+  const durationMs = info.dataSize / (info.sampleRate * info.blockAlign / 1000);
+  const threshold = Math.max(180, energy.peak * 0.10);
+  const raw = [];
+  let activeStart = -1;
+  let activeEnd = -1;
+  for (const w of energy.windows) {
     if (w.e >= threshold) {
-      if (first < 0) first = w.start;
-      last = w.end;
+      if (activeStart < 0) activeStart = w.start;
+      activeEnd = w.end;
+    } else if (activeStart >= 0) {
+      if ((activeEnd - activeStart) * 1000 / info.sampleRate >= 55) raw.push([activeStart, activeEnd]);
+      activeStart = -1;
+      activeEnd = -1;
     }
   }
-  if (first < 0 || last <= first) return null;
-  const durationMs = info.dataSize / (info.sampleRate * info.blockAlign / 1000);
-  return {
-    startMs: Math.max(0, Math.round(first * 1000 / info.sampleRate) - 24),
-    endMs: Math.min(durationMs, Math.round(last * 1000 / info.sampleRate) + 80),
-    peak: Math.round(peak),
+  if (activeStart >= 0 && (activeEnd - activeStart) * 1000 / info.sampleRate >= 55) raw.push([activeStart, activeEnd]);
+  if (!raw.length) return null;
+
+  const padded = raw.map(([a, b]) => ({
+    startMs: Math.max(0, Math.round(a * 1000 / info.sampleRate) - 24),
+    endMs: Math.min(durationMs, Math.round(b * 1000 / info.sampleRate) + 70),
+  }));
+  const merged = [];
+  for (const seg of padded) {
+    const last = merged[merged.length - 1];
+    if (last && seg.startMs - last.endMs <= 85) {
+      last.endMs = Math.max(last.endMs, seg.endMs);
+    } else {
+      merged.push({ ...seg });
+    }
+  }
+  const cleaned = [];
+  for (const seg of merged) {
+    const dur = seg.endMs - seg.startMs;
+    const last = cleaned[cleaned.length - 1];
+    if (last && dur < 80) {
+      last.endMs = Math.max(last.endMs, seg.endMs);
+    } else {
+      cleaned.push(seg);
+    }
+  }
+  const segments = cleaned.length ? cleaned : padded;
+  const active = {
+    startMs: segments[0].startMs,
+    endMs: segments[segments.length - 1].endMs,
+    peak: Math.round(energy.peak),
     threshold: Math.round(threshold),
   };
+  return { active, segments, peak: Math.round(energy.peak), threshold: Math.round(threshold), windowMs: energy.windowMs };
+}
+
+function activeSpeechBoundsFromWav(bytes, info) {
+  return qwenActiveSpeechAnalysisFromWav(bytes, info)?.active || null;
+}
+
+function qwenTextRuns(chars) {
+  const runs = [];
+  let i = 0;
+  while (i < chars.length) {
+    const start = i;
+    const punct = isPunctuationChar(chars[i]);
+    let weight = 0;
+    while (i < chars.length && isPunctuationChar(chars[i]) === punct) {
+      weight += Math.max(0.01, charTimelineWeight(chars[i]));
+      i++;
+    }
+    runs.push({ type: punct ? 'punct' : 'speech', start, end: i, text: chars.slice(start, i).join(''), weight });
+  }
+  return runs;
+}
+
+function assignQwenTimedChars(charTime, sources, groups, chars, start, end, timeBegin, timeEnd, sourceLabel, groupId) {
+  if (end <= start || !Number.isFinite(timeBegin) || !Number.isFinite(timeEnd) || timeEnd <= timeBegin) return;
+  const weights = [];
+  let total = 0;
+  for (let i = start; i < end; i++) {
+    const w = Math.max(0.01, charTimelineWeight(chars[i]));
+    weights.push(w);
+    total += w;
+  }
+  if (!(total > 0)) total = end - start;
+  let cursor = timeBegin;
+  for (let i = start; i < end; i++) {
+    const idx = i - start;
+    const next = i === end - 1 ? timeEnd : cursor + (timeEnd - timeBegin) * (weights[idx] / total);
+    charTime[i] = [cursor, Math.max(cursor + 1, next)];
+    sources[i] = sourceLabel;
+    groups[i] = groupId;
+    cursor = next;
+  }
+}
+
+function assignQwenSegmentsToSpeechRuns(charTime, sources, groups, chars, speechRuns, segments, active) {
+  if (!speechRuns.length) return false;
+  if (!segments?.length || segments.length < speechRuns.length) {
+    const total = speechRuns.reduce((sum, r) => sum + r.weight, 0) || speechRuns.length;
+    let cursor = active.startMs;
+    for (let i = 0; i < speechRuns.length; i++) {
+      const run = speechRuns[i];
+      const next = i === speechRuns.length - 1 ? active.endMs : cursor + (active.endMs - active.startMs) * (run.weight / total);
+      assignQwenTimedChars(charTime, sources, groups, chars, run.start, run.end, cursor, next, 'qwen_run_est', `qwen-run:${i}:${run.start}-${run.end}`);
+      cursor = next;
+    }
+    return true;
+  }
+
+  const totalRunWeight = speechRuns.reduce((sum, r) => sum + r.weight, 0) || speechRuns.length;
+  const totalSegDur = segments.reduce((sum, seg) => sum + Math.max(1, seg.endMs - seg.startMs), 0) || Math.max(1, active.endMs - active.startMs);
+  const cumulativeSegDur = [];
+  let segSum = 0;
+  for (const seg of segments) {
+    segSum += Math.max(1, seg.endMs - seg.startMs);
+    cumulativeSegDur.push(segSum);
+  }
+  let segIndex = 0;
+  let runWeightSeen = 0;
+  for (let i = 0; i < speechRuns.length; i++) {
+    const run = speechRuns[i];
+    const startSeg = Math.min(segIndex, segments.length - 1);
+    let endSeg = startSeg;
+    if (i === speechRuns.length - 1) {
+      endSeg = segments.length - 1;
+    } else {
+      runWeightSeen += run.weight;
+      const targetDur = totalSegDur * (runWeightSeen / totalRunWeight);
+      const maxEndSeg = Math.max(startSeg, segments.length - (speechRuns.length - i));
+      while (endSeg < maxEndSeg && cumulativeSegDur[endSeg] < targetDur) endSeg++;
+    }
+    const segStart = segments[startSeg]?.startMs ?? active.startMs;
+    const segEnd = segments[endSeg]?.endMs ?? active.endMs;
+    assignQwenTimedChars(charTime, sources, groups, chars, run.start, run.end, segStart, Math.max(segStart + 1, segEnd), 'qwen_segment_est', `qwen-seg:${i}:${run.start}-${run.end}`);
+    segIndex = endSeg + 1;
+  }
+  return true;
+}
+
+function assignQwenPunctuationGaps(charTime, sources, groups, chars, runs, active, audioDurationMs) {
+  for (const run of runs) {
+    if (run.type !== 'punct') continue;
+    let prev = run.start - 1;
+    while (prev >= 0 && !charTime[prev]) prev--;
+    let next = run.end;
+    while (next < charTime.length && !charTime[next]) next++;
+    const gapStart = prev >= 0 ? charTime[prev][1] : active.startMs;
+    let gapEnd = next < charTime.length ? charTime[next][0] : active.endMs;
+    if (!Number.isFinite(gapEnd) || gapEnd <= gapStart) gapEnd = Math.min(audioDurationMs, gapStart + Math.max(1, run.weight * 24));
+    assignQwenTimedChars(charTime, sources, groups, chars, run.start, run.end, gapStart, gapEnd, 'qwen_punct_gap', `qwen-punct:${run.start}-${run.end}`);
+  }
 }
 
 function buildCharTimeFromQwenEstimate(bytes, text, wavInfo) {
@@ -861,25 +999,26 @@ function buildCharTimeFromQwenEstimate(bytes, text, wavInfo) {
   const charTime = new Array(chars.length);
   const sources = new Array(chars.length);
   const groups = new Array(chars.length);
-  if (!info || !chars.length) return { charTime, sources, groups, active: null };
+  if (!info || !chars.length) return { charTime, sources, groups, active: null, segments: [], runs: [], strategy: 'qwen-empty' };
   const audioDurationMs = info.dataSize / (info.sampleRate * info.blockAlign / 1000);
-  const active = activeSpeechBoundsFromWav(bytes, info);
-  const startMs = active ? active.startMs : 0;
-  const endMs = active ? active.endMs : audioDurationMs;
-  const spanMs = Math.max(1, endMs - startMs);
-  const weights = chars.map(charTimelineWeight);
-  let totalWeight = weights.reduce((sum, value) => sum + value, 0);
-  if (!(totalWeight > 0)) totalWeight = chars.length || 1;
-  let cursor = startMs;
-  for (let i = 0; i < chars.length; i++) {
-    const w = weights[i] || (1 / Math.max(1, chars.length));
-    const next = i === chars.length - 1 ? endMs : cursor + spanMs * (w / totalWeight);
-    charTime[i] = [cursor, Math.max(cursor + 1, next)];
-    sources[i] = isPunctuationChar(chars[i]) ? 'qwen_punct_est' : 'qwen_char_est';
-    groups[i] = `qwen-est:${i}`;
-    cursor = next;
-  }
-  return { charTime, sources, groups, active };
+  const analysis = qwenActiveSpeechAnalysisFromWav(bytes, info);
+  const active = analysis?.active || { startMs: 0, endMs: audioDurationMs, peak: 0, threshold: 0 };
+  const runs = qwenTextRuns(chars);
+  const speechRuns = runs.filter(run => run.type === 'speech');
+  const assigned = assignQwenSegmentsToSpeechRuns(charTime, sources, groups, chars, speechRuns, analysis?.segments || [], active);
+  if (!assigned) assignQwenTimedChars(charTime, sources, groups, chars, 0, chars.length, active.startMs, active.endMs, 'qwen_char_est', 'qwen-all');
+  assignQwenPunctuationGaps(charTime, sources, groups, chars, runs, active, audioDurationMs);
+  fillCharTimeGaps(charTime, audioDurationMs, sources);
+  for (let i = 0; i < groups.length; i++) if (!groups[i]) groups[i] = sources[i] || 'qwen_gap';
+  return {
+    charTime,
+    sources,
+    groups,
+    active,
+    segments: analysis?.segments || [],
+    runs,
+    strategy: analysis?.segments?.length ? 'qwen-energy-segment-runs' : 'qwen-active-weighted-runs',
+  };
 }
 
 function qwenEstimatedTargetWord(bytes, carrierText, target) {
@@ -1363,7 +1502,7 @@ async function preprocessTts(env, body) {
     char_source: timeline.sources,
     char_group: timeline.groups,
     char_count: total,
-    coverage: { covered, total, sources: sourceCounts(timeline.sources), active: timeline.active, strategy: 'qwen-energy-weighted-estimate' },
+    coverage: { covered, total, sources: sourceCounts(timeline.sources), active: timeline.active, segments: timeline.segments, strategy: timeline.strategy },
     subtitle_debug: summarizeQwenTimeline(timeline, text),
     provider: out.provider,
     voice: out.voice,
@@ -1479,7 +1618,9 @@ export default {
             durationMs: Math.round(wavInfo.dataSize / (wavInfo.sampleRate * wavInfo.blockAlign / 1000)),
             active: timeline.active,
             chars: summarizeQwenTimeline(timeline, v.body.text),
-            coverage: { covered: timeline.charTime.filter(Boolean).length, total: Array.from(v.body.text || '').length, sources: sourceCounts(timeline.sources) },
+            coverage: { covered: timeline.charTime.filter(Boolean).length, total: Array.from(v.body.text || '').length, sources: sourceCounts(timeline.sources), strategy: timeline.strategy },
+            segments: timeline.segments,
+            runs: timeline.runs,
           } : null;
           let clipHtml = '';
           let clipMeta = null;
