@@ -1473,6 +1473,14 @@ export default {
           for (const b of out.bytes) bin += String.fromCharCode(b);
           const b64 = btoa(bin);
           const mime = out.format === 'mp3' ? 'audio/mpeg' : (out.format === 'opus' ? 'audio/ogg' : 'audio/wav');
+          const wavInfo = out.format === 'wav' ? parseWavInfo(out.bytes) : null;
+          const timeline = wavInfo ? buildCharTimeFromQwenEstimate(out.bytes, v.body.text, wavInfo) : null;
+          const timelineMeta = timeline ? {
+            durationMs: Math.round(wavInfo.dataSize / (wavInfo.sampleRate * wavInfo.blockAlign / 1000)),
+            active: timeline.active,
+            chars: summarizeQwenTimeline(timeline, v.body.text),
+            coverage: { covered: timeline.charTime.filter(Boolean).length, total: Array.from(v.body.text || '').length, sources: sourceCounts(timeline.sources) },
+          } : null;
           let clipHtml = '';
           let clipMeta = null;
           if (v.body.teaching_target && out.format === 'wav') {
@@ -1493,7 +1501,7 @@ export default {
               clipMeta = { target: v.body.teaching_target, error: 'target word timestamp not found', fallback: 'disabled; add fallback=1 to inspect energy crop' };
             }
           }
-          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, parameters: out.parameters, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice, runAll, allowEnergyFallback }, null, 2))}</pre></section>`);
+          rows.push(`<section><h3>${escapeHtml(v.label)}</h3><h4>完整载体</h4><audio controls src="data:${mime};base64,${b64}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify({ text, request: v.body, sentText: out.requestText, parameters: out.parameters, bytes: out.bytes.length, format: out.format, provider: out.provider, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, timeline: timelineMeta, clip: clipMeta, audioDebug: out.audioDebug, model: out.model, voice: out.voice, runAll, allowEnergyFallback }, null, 2))}</pre></section>`);
         } catch (e) {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
