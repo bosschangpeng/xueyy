@@ -1193,16 +1193,14 @@ export default {
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
       const instruction = debugVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
       const single = isSingleCjk(text);
-      const carrierText = single ? `${text}，字。` : text;
+      const carrierText = single ? `${text}\u3002` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const allVariants = single ? [
-        { id: 'carrier', label: `教学载体: ${carrierText}`, body: baseBody },
-        { id: 'carrier-pinyin', label: `教学载体 + 普通话拼音 hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
-        { id: 'carrier-jyutping', label: `教学载体 + 粤拼 hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'carrier', label: `Carrier: ${carrierText}`, body: baseBody },
+        { id: 'carrier-pinyin', label: `Carrier + pinyin hot_fix: ${py}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: py } ] } } },
       ] : [
-        { id: 'plain', label: '不指定读音', body: { text } },
-        { id: 'pinyin', label: `普通话拼音 hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
-        { id: 'jyutping', label: `粤拼 hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
+        { id: 'plain', label: 'No override', body: { text } },
+        { id: 'pinyin', label: `Pinyin hot_fix: ${py}`, body: { text, hot_fix: { pronunciation: [ { [text]: py } ] } } },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];
@@ -1226,7 +1224,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320, tailSilenceToMs: 900 });
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 140, 240, { minDurationMs: 520, tailSilenceToMs: 900 });
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
