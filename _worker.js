@@ -280,7 +280,19 @@ function cropWavByMs(bytes, startMs, endMs, padStartMs = 25, padEndMs = 80, opts
   start -= start % info.blockAlign;
   end -= end % info.blockAlign;
   if (end <= start) throw ttsProviderError(`Invalid crop range: ${startMs}-${endMs}`, 502);
-  const pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
+  let pcm = bytes.slice(info.dataOffset + start, info.dataOffset + end);
+  const tailSilenceToMs = Number(opts.tailSilenceToMs || 0);
+  if (tailSilenceToMs) {
+    const currentMs = pcm.length / bytesPerMs;
+    if (currentMs < tailSilenceToMs) {
+      const silenceBytes = Math.max(0, Math.round((tailSilenceToMs - currentMs) * bytesPerMs));
+      const silence = new Uint8Array(silenceBytes - (silenceBytes % info.blockAlign));
+      const padded = new Uint8Array(pcm.length + silence.length);
+      padded.set(pcm);
+      padded.set(silence, pcm.length);
+      pcm = padded;
+    }
+  }
   return makePcmWav(pcm, info.sampleRate, info.channels, info.bitsPerSample);
 }
 function cropFirstActiveWavSegment(bytes) {
@@ -611,7 +623,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
 
   const audioFormat = opts.format || body.format || 'wav';
   const model = body.model || opts.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
-  const voice = body.voice || opts.voice || env.COSYVOICE_VOICE || 'longjiayi_v3';
+  const voice = body.voice || opts.voice || env.COSYVOICE_VOICE || 'longanyue_v3';
   const rate = Number(body.rate ?? body.speed ?? opts.rate ?? 1.0);
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
   const explicitInstruction = body.instruction ?? opts.instruction;
@@ -1053,7 +1065,7 @@ function escapeAttr(value) {
 async function preprocessTts(env, body) {
   const text = String(body?.text || '').trim();
   if (!text) throw ttsProviderError('预处理文本不能为空', 400);
-  const voice = body?.voice || env.COSYVOICE_VOICE || 'longjiayi_v3';
+  const voice = body?.voice || env.COSYVOICE_VOICE || 'longanyue_v3';
   const model = body?.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
   const speed = Number(body?.speed ?? body?.rate ?? 0.85);
   const sampleRate = Number(body?.sample_rate || 24000);
@@ -1154,7 +1166,7 @@ export default {
       }
       // 测试 CosyVoice 请求
       try {
-        const healthVoice = env.COSYVOICE_VOICE || 'longjiayi_v3';
+        const healthVoice = env.COSYVOICE_VOICE || 'longanyue_v3';
         const healthInstruction = healthVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
         const out = await cosyVoiceTts(env, { text: '你好世界', voice: healthVoice, format: 'wav', sample_rate: 24000, instruction: healthInstruction });
         results.push('API: OK');
@@ -1175,7 +1187,7 @@ export default {
       const text = url.searchParams.get('text') || '说';
       const py = url.searchParams.get('py') || 'shuo1';
       const jp = url.searchParams.get('jp') || 'syut3';
-      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longjiayi_v3';
+      const debugVoice = url.searchParams.get('voice') || env.COSYVOICE_VOICE || 'longanyue_v3';
       const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
       const runAll = url.searchParams.get('all') === '1';
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
@@ -1214,7 +1226,7 @@ export default {
           if (v.body.teaching_target && out.format === 'wav') {
             const targetWord = findTargetWord(out.words, v.body.teaching_target);
             if (targetWord) {
-              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320 });
+              const clipped = cropWavByMs(out.bytes, targetWord.begin_time, targetWord.end_time, 45, 130, { minDurationMs: 320, tailSilenceToMs: 900 });
               let cbin = '';
               for (const b of clipped) cbin += String.fromCharCode(b);
               clipHtml = `<h4>裁切目标字</h4><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;

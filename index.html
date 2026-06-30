@@ -618,14 +618,28 @@ async function playSongSlice(pcm, sr, ch, bits, startMs, endMs, rate, opts = {})
     debugLog('audio:slice-reject', { ...debugMeta, reason: 'bad-byte-range', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sb, eb, pcmBytes: pcm.length, boundary });
     return false;
   }
-  const slice = pcm.slice(sb, Math.min(eb, pcm.length));
+  let slice = pcm.slice(sb, Math.min(eb, pcm.length));
   if (slice.length < 100) {
     debugLog('audio:slice-reject', { ...debugMeta, reason: 'slice-too-short', startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), sliceBytes: slice.length, boundary });
     return false;
   }
+  const rawSliceBytes = slice.length;
+  const tailSilenceToMs = Number(opts.tailSilenceToMs || 0);
+  let tailSilenceMs = 0;
+  if (tailSilenceToMs) {
+    const rawSliceMs = rawSliceBytes / bytesPerMs;
+    if (rawSliceMs < tailSilenceToMs) {
+      const silence = makeSilencePcm(tailSilenceToMs - rawSliceMs, sr, ch, bits);
+      const padded = new Uint8Array(slice.length + silence.length);
+      padded.set(slice);
+      padded.set(silence, slice.length);
+      slice = padded;
+      tailSilenceMs = Math.round(silence.length / bytesPerMs);
+    }
+  }
   const holdMs = Math.max(0, opts.holdMs || 0);
-  debugLog('audio:slice', { ...debugMeta, startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), prePad, postPad, holdMs, sb, eb: Math.min(eb, pcm.length), sliceBytes: slice.length, boundary });
-  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token, { ...debugMeta, pcmMs: Math.round(slice.length / bytesPerMs), holdMs });
+  debugLog('audio:slice', { ...debugMeta, startMs: Math.round(startMs), endMs: Math.round(endMs), sliceStartMs: Math.round(sliceStartMs), sliceEndMs: Math.round(sliceEndMs), prePad, postPad, holdMs, tailSilenceToMs, tailSilenceMs, sb, eb: Math.min(eb, pcm.length), rawSliceBytes, sliceBytes: slice.length, boundary });
+  return playAudioBlob({ p: slice, sr, ch, bits }, rate, opts.token, { ...debugMeta, pcmMs: Math.round(slice.length / bytesPerMs), holdMs, tailSilenceMs });
 }
 
 async function playPcmCharRange(source, startChar, endChar, rate, opts = {}) {
@@ -986,19 +1000,19 @@ function stopSpeak() {
 // ── CosyVoice 在线 TTS + IndexedDB 缓存 ──
 let onlineTtsEnabled = localStorage.getItem('onlineTts') === '1';
 let cacheAvailable = false;
-let ttsVoice = localStorage.getItem('mxVoice') || 'longjiayi_v3';
+let ttsVoice = localStorage.getItem('mxVoice') || 'longanyue_v3';
 let isolatedCharFallbackEnabled = false;
 localStorage.removeItem('isolatedCharFallback');
 let currentAudio = null;
 
-const MX_VOICE_MIGRATION_KEY = 'mxVoiceTimelineMigration20260629';
+const MX_VOICE_MIGRATION_KEY = 'mxVoiceMaleCantoneseMigration20260630';
 const MX_VOICES = [
-  { id: 'longjiayi_v3', label: 'Cosy 粤语女 ♀' },
-  { id: 'longanyue_v3', label: 'Cosy 粤语男 ♂' },
-  { id: 'longanhuan_v3', label: 'Cosy 多方言女 ♀' },
+  { id: 'longanyue_v3', label: 'Cosy ??? ?' },
+  { id: 'longjiayi_v3', label: 'Cosy ??? ?' },
+  { id: 'longanhuan_v3', label: 'Cosy ???? ?' },
 ];
-if (!localStorage.getItem(MX_VOICE_MIGRATION_KEY) && ttsVoice === 'longanhuan_v3') {
-  ttsVoice = 'longjiayi_v3';
+if (!localStorage.getItem(MX_VOICE_MIGRATION_KEY) && (ttsVoice === 'longjiayi_v3' || ttsVoice === 'longanhuan_v3')) {
+  ttsVoice = 'longanyue_v3';
   localStorage.setItem('mxVoice', ttsVoice);
   localStorage.setItem(MX_VOICE_MIGRATION_KEY, '1');
 }
@@ -3393,6 +3407,7 @@ async function playWord(si, wi) {
         minMs: wLen <= 1 ? 320 : 210,
         rejectBelowMs: wLen <= 1 ? 110 : 120,
         boundaryMinSliceMs: wLen <= 1 ? 260 : undefined,
+        tailSilenceToMs: wLen <= 1 ? 900 : 0,
         snapToLowEnergy: true,
         token,
         debug: { route: 'sentence-timeline-primary', kind: 'word', si, wi, text: w.text }
