@@ -3,7 +3,7 @@
 // ALLOWED_CODES = 邀请码列表（一人一码，KV自动标记已用）
 // DASHSCOPE_API_KEY = 阿里云百炼 DashScope API Key
 // COSYVOICE_MODEL = 可选，默认 cosyvoice-v3-flash
-// COSYVOICE_VOICE = 可选，默认 longjiayi_v3
+// COSYVOICE_VOICE = optional, defaults to longanyue_v3
 // KV绑定变量名 YUE_KV
 
 const AUTH_COOKIE = 'yue_token';
@@ -13,6 +13,11 @@ const TTS_REQUEST_INTERVAL_MS = Math.ceil(60000 / TTS_RPM_LIMIT) + 100;
 const TTS_RATE_LIMIT_RETRY_MS = 65000;
 let ttsNextRequestAt = 0;
 let ttsQueue = Promise.resolve();
+const COSY_LONGANYUE_CALM_INSTRUCTION = '\u8bf7\u7528\u5e73\u9759\u3001\u81ea\u7136\u3001\u67d4\u548c\u7684\u7ca4\u8bed\u6717\u8bfb\uff0c\u4e0d\u8981\u558a\u53eb\uff0c\u4e0d\u8981\u5938\u5f20\u3002';
+const COSY_LONGANYUE_VOLUME = 80;
+const COSY_LONGANYUE_PITCH = 0.94;
+const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
+const COSY_LONGANYUE_DEBUG_SPEED = 0.78;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -44,6 +49,24 @@ function ttsJsonError(e) {
   const headers = {'Content-Type':'application/json'};
   if (status === 429) headers['Retry-After'] = e.retryAfter || String(Math.ceil(TTS_RATE_LIMIT_RETRY_MS / 1000));
   return new Response(JSON.stringify({error:e.message}), {status, headers});
+}
+
+function defaultCosyInstruction(env, voice) {
+  if (voice === 'longanhuan_v3') return env.COSYVOICE_INSTRUCTION || '\u8bf7\u7528\u5e7f\u4e1c\u8bdd\u8868\u8fbe\u3002';
+  if (voice === 'longanyue_v3') return env.COSYVOICE_LONGANYUE_INSTRUCTION || COSY_LONGANYUE_CALM_INSTRUCTION;
+  return '';
+}
+
+function defaultCosyVolume(voice) {
+  return voice === 'longanyue_v3' ? COSY_LONGANYUE_VOLUME : 50;
+}
+
+function defaultCosyPitch(voice) {
+  return voice === 'longanyue_v3' ? COSY_LONGANYUE_PITCH : 1.0;
+}
+
+function defaultCosyPreprocessSpeed(voice) {
+  return voice === 'longanyue_v3' ? COSY_LONGANYUE_PREPROCESS_SPEED : 0.85;
 }
 
 const PAGE = (msg) => `<!DOCTYPE html>
@@ -627,16 +650,17 @@ async function cosyVoiceTts(env, body, opts = {}) {
   const rate = Number(body.rate ?? body.speed ?? opts.rate ?? 1.0);
   const sampleRate = Number(body.sample_rate || opts.sample_rate || 24000);
   const explicitInstruction = body.instruction ?? opts.instruction;
-  const instruction = explicitInstruction != null ? explicitInstruction : (voice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '');
+  const instruction = explicitInstruction != null ? explicitInstruction : defaultCosyInstruction(env, voice);
+
 
   const request = {
     text: normalizeCosyText(body.text),
     voice,
     format: audioFormat,
     sampleRate,
-    volume: Number(body.volume ?? opts.volume ?? 50),
+    volume: Number(body.volume ?? opts.volume ?? defaultCosyVolume(voice)),
     rate: Number.isFinite(rate) ? Math.max(0.5, Math.min(2.0, rate)) : 1.0,
-    pitch: Number(body.pitch ?? opts.pitch ?? 1.0),
+    pitch: Number(body.pitch ?? opts.pitch ?? defaultCosyPitch(voice)),
     languageHints: body.language_hints || opts.language_hints || ['zh'],
     enableAigcTag: body.enable_aigc_tag ?? opts.enable_aigc_tag ?? false,
     enableSsml: body.enable_ssml || opts.enable_ssml,
@@ -1067,9 +1091,10 @@ async function preprocessTts(env, body) {
   if (!text) throw ttsProviderError('预处理文本不能为空', 400);
   const voice = body?.voice || env.COSYVOICE_VOICE || 'longanyue_v3';
   const model = body?.model || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
-  const speed = Number(body?.speed ?? body?.rate ?? 0.85);
+  const speed = Number(body?.speed ?? body?.rate ?? defaultCosyPreprocessSpeed(voice));
   const sampleRate = Number(body?.sample_rate || 24000);
-  const instruction = body?.instruction != null ? body.instruction : (voice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '');
+  const instruction = body?.instruction != null ? body.instruction : defaultCosyInstruction(env, voice);
+
   const out = await cosyVoiceTts(env, {
     text,
     voice,
@@ -1077,6 +1102,8 @@ async function preprocessTts(env, body) {
     format: 'wav',
     sample_rate: sampleRate,
     speed,
+    volume: body?.volume,
+    pitch: body?.pitch,
     language_hints: ['zh'],
     word_timestamp_enabled: true,
     instruction,
@@ -1167,7 +1194,7 @@ export default {
       // 测试 CosyVoice 请求
       try {
         const healthVoice = env.COSYVOICE_VOICE || 'longanyue_v3';
-        const healthInstruction = healthVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
+        const healthInstruction = defaultCosyInstruction(env, healthVoice);
         const out = await cosyVoiceTts(env, { text: '你好世界', voice: healthVoice, format: 'wav', sample_rate: 24000, instruction: healthInstruction });
         results.push('API: OK');
         results.push('audio: ' + out.bytes.length + ' bytes');
@@ -1191,7 +1218,7 @@ export default {
       const debugModel = url.searchParams.get('model') || env.COSYVOICE_MODEL || 'cosyvoice-v3-flash';
       const runAll = url.searchParams.get('all') === '1';
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
-      const instruction = debugVoice === 'longanhuan_v3' ? (env.COSYVOICE_INSTRUCTION || '请用广东话表达。') : '';
+      const instruction = defaultCosyInstruction(env, debugVoice);
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}\u3002` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
@@ -1212,7 +1239,7 @@ export default {
             model: debugModel,
             format: 'wav',
             sample_rate: 24000,
-            speed: single ? 0.78 : undefined,
+            speed: single ? COSY_LONGANYUE_DEBUG_SPEED : undefined,
             instruction,
           });
           let bin = '';

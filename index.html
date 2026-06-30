@@ -353,8 +353,13 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v2_sentence_timeline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v1';
+const ALIGN_SCHEMA_VERSION = 'ct_cosyvoice_v3_sentence_timeline_calm80';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_cosyvoice_v2_calm80';
+const COSY_LONGANYUE_CALM_INSTRUCTION = '\u8bf7\u7528\u5e73\u9759\u3001\u81ea\u7136\u3001\u67d4\u548c\u7684\u7ca4\u8bed\u6717\u8bfb\uff0c\u4e0d\u8981\u558a\u53eb\uff0c\u4e0d\u8981\u5938\u5f20\u3002';
+const COSY_LONGANYUE_VOLUME = 80;
+const COSY_LONGANYUE_PITCH = 0.94;
+const COSY_LONGANYUE_PREPROCESS_SPEED = 0.80;
+const COSY_LONGANYUE_CLIP_SPEED = 0.86;
 const TEACHING_CHAR_SPEED = 0.78;
 const TEACHING_WORD_SPEED = 0.82;
 const AUTO_PREWARM_TEACHING_ASSETS = false;
@@ -579,7 +584,7 @@ function preprocessChunkCacheKey(text) {
     ttsVoice,
     'preprocess-v1',
     'cosyvoice-v3-flash',
-    '0.85',
+    ttsVoice === 'longanyue_v3' ? String(COSY_LONGANYUE_PREPROCESS_SPEED) : '0.85',
     text
   ].join('|'));
 }
@@ -1268,14 +1273,31 @@ async function fetchTtsProxy(path, init, label = 'tts') {
 }
 
 function ttsInstructionForVoice(voice) {
-  return voice === 'longanhuan_v3' ? '请用广东话表达。' : '';
+  if (voice === 'longanyue_v3') return COSY_LONGANYUE_CALM_INSTRUCTION;
+  return voice === 'longanhuan_v3' ? '\u8bf7\u7528\u5e7f\u4e1c\u8bdd\u8868\u8fbe\u3002' : '';
+}
+
+function cosyToneParamsForVoice(voice, opts = {}) {
+  if (voice !== 'longanyue_v3') return {};
+  const params = { volume: COSY_LONGANYUE_VOLUME, pitch: COSY_LONGANYUE_PITCH };
+  if (opts.speed != null) params.speed = opts.speed;
+  return params;
 }
 
 async function fetchTtsFromProvider(text) {
   const resp = await fetchTtsProxy('/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: ttsVoice, speed: 0.9, model: TEACHING_ASSET_MODEL, format: 'wav', sample_rate: 24000, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
+    body: JSON.stringify({
+      text,
+      voice: ttsVoice,
+      speed: 0.9,
+      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_CLIP_SPEED }),
+      model: TEACHING_ASSET_MODEL,
+      format: 'wav',
+      sample_rate: 24000,
+      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+    }),
   }, 'tts-clip');
   if (!resp.ok) {
     let msg = 'CosyVoice TTS failed: ' + resp.status;
@@ -1599,6 +1621,7 @@ async function ensureCarrierSourceCached(asset) {
       speed: asset.speed,
       model: asset.model,
       language_hints: ['zh'],
+      ...cosyToneParamsForVoice(ttsVoice),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined,
     }),
   }, `teaching-${asset.type}`);
@@ -1673,6 +1696,7 @@ async function fetchTeachingTtsFromProvider(asset) {
       model: asset.model,
       format: asset.format,
       sample_rate: 24000,
+      ...cosyToneParamsForVoice(ttsVoice),
       instruction: ttsInstructionForVoice(ttsVoice) || undefined,
       language_hints: ['zh'],
     }),
@@ -1849,7 +1873,12 @@ async function fetchPreprocessChunk(chunk, label) {
   const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: chunk, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
+    body: JSON.stringify({
+      text: chunk,
+      voice: ttsVoice,
+      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_PREPROCESS_SPEED }),
+      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+    }),
   }, label);
   if (!resp.ok) {
     let msg = '预处理失败: ' + resp.status;
@@ -1889,7 +1918,12 @@ async function fetchPreprocessClip(text) {
   const resp = await fetchTtsProxy('/preprocess', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice: ttsVoice, instruction: ttsInstructionForVoice(ttsVoice) || undefined }),
+    body: JSON.stringify({
+      text,
+      voice: ttsVoice,
+      ...cosyToneParamsForVoice(ttsVoice, { speed: COSY_LONGANYUE_PREPROCESS_SPEED }),
+      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+    }),
   }, 'preprocess-clip');
   if (!resp.ok) {
     let msg = '预处理clip失败: ' + resp.status;
