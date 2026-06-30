@@ -1197,14 +1197,17 @@ export default {
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}\uFF0C\u5B57\u3002` : text;
       const jpTone = jp ? `${text}/(${jp})` : '';
+      const jpInstruction = jp ? `Please read the Chinese text in Cantonese, and pronounce ${text} as Jyutping ${jp}. Do not spell out the romanization.` : '';
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
       const allVariants = single ? [
         { id: 'carrier', label: `Carrier: ${carrierText}`, body: baseBody },
         { id: 'carrier-jyutping-dict', label: `Carrier + pronunciation_dict: ${jp}`, body: { ...baseBody, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
+        { id: 'carrier-jyutping-instruction', label: `Carrier + instruction jyutping: ${jp}`, body: { ...baseBody, instruction: jpInstruction || undefined } },
         { id: 'carrier-jyutping-hotfix', label: `Carrier + jyutping hot_fix: ${jp}`, body: { ...baseBody, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ] : [
         { id: 'plain', label: 'No override', body: { text } },
         { id: 'jyutping-dict', label: `pronunciation_dict: ${jp}`, body: { text, pronunciation_dict: jpTone ? { tone: [jpTone] } : undefined } },
+        { id: 'jyutping-instruction', label: `Instruction jyutping: ${jp}`, body: { text, instruction: jpInstruction || undefined } },
         { id: 'jyutping-hotfix', label: `Jyutping hot_fix: ${jp}`, body: { text, hot_fix: { pronunciation: [ { [text]: jp } ] } } },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
