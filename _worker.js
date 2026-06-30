@@ -209,19 +209,19 @@ function getAudioDebug(bytes) {
   };
 }
 
-function validateAudioBytes(bytes, format) {
+function validateAudioBytes(bytes, format, provider = 'TTS') {
   const info = getAudioDebug(bytes);
   const fmt = String(format || '').toLowerCase();
-  if (!bytes || bytes.length < 512) throw ttsProviderError(`CosyVoice returned invalid audio: too small ${JSON.stringify(info)}`, 502);
-  if (bytes[0] === 60 || bytes[0] === 123) throw ttsProviderError(`CosyVoice returned invalid audio payload: ${JSON.stringify(info)}`, 502);
+  if (!bytes || bytes.length < 512) throw ttsProviderError(`${provider} returned invalid audio: too small ${JSON.stringify(info)}`, 502);
+  if (bytes[0] === 60 || bytes[0] === 123) throw ttsProviderError(`${provider} returned invalid audio payload: ${JSON.stringify(info)}`, 502);
   if (fmt === 'wav') {
     const ok = bytes.length > 44 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70;
-    if (!ok) throw ttsProviderError(`CosyVoice returned invalid wav: ${JSON.stringify(info)}`, 502);
+    if (!ok) throw ttsProviderError(`${provider} returned invalid wav: ${JSON.stringify(info)}`, 502);
   }
   if (fmt === 'mp3') {
     const hasId3 = bytes[0] === 73 && bytes[1] === 68 && bytes[2] === 51;
     const hasFrame = bytes[0] === 255 && (bytes[1] & 224) === 224;
-    if (bytes.length < 2400 || (!hasId3 && !hasFrame)) throw ttsProviderError(`CosyVoice returned invalid mp3: ${JSON.stringify(info)}`, 502);
+    if (bytes.length < 2400 || (!hasId3 && !hasFrame)) throw ttsProviderError(`${provider} returned invalid mp3: ${JSON.stringify(info)}`, 502);
   }
   return info;
 }
@@ -670,7 +670,7 @@ async function cosyVoiceTts(env, body, opts = {}) {
   if (!out.bytes || !out.bytes.length) {
     throw ttsProviderError(`CosyVoice WebSocket returned no audio: events=${out.events.join(',')}; task=${out.taskId}`, 502);
   }
-  const audioDebug = validateAudioBytes(out.bytes, audioFormat);
+  const audioDebug = validateAudioBytes(out.bytes, audioFormat, 'CosyVoice');
   return { data: out.data, bytes: out.bytes, format: audioFormat, model, voice, sampleRate, provider: 'cosyvoice-ws', requestText: request.text, parameters: out.parameters, audioDebug, chunks: out.chunks, events: out.events, words: out.words, outputs: out.outputs, taskId: out.taskId };
 }
 
@@ -703,8 +703,15 @@ function normalizeQwenText(text) {
 
 function qwenAudioUrlFromResponse(data) {
   const audio = data?.output?.audio;
-  if (typeof audio === 'string' && /^https?:/i.test(audio)) return audio;
-  return audio?.url || data?.output?.audio_url || data?.output?.url || data?.audio?.url || data?.url || '';
+  const candidates = [
+    typeof audio === 'string' ? audio : '',
+    audio?.url,
+    data?.output?.audio_url,
+    data?.output?.url,
+    data?.audio?.url,
+    data?.url,
+  ];
+  return candidates.find(value => typeof value === 'string' && /^https?:/i.test(value.trim())) || '';
 }
 
 function qwenAudioBytesFromResponse(data) {
@@ -765,7 +772,7 @@ async function qwenTts(env, body, opts = {}) {
   }
   if (!bytes?.length) throw ttsProviderError('Qwen TTS returned no audio URL or audio payload', 502);
   const format = 'wav';
-  const audioDebug = validateAudioBytes(bytes, format);
+  const audioDebug = validateAudioBytes(bytes, format, 'Qwen TTS');
   const parameters = {
     voice,
     model,
@@ -997,7 +1004,7 @@ function projectCharTimeToOriginal(speechCharTime, mapToOriginal, originalLength
 }
 
 // ── 构建「修改后文本位置 → 原文位置」映射 ──
-// addSentencePauses 是旧字幕对齐流程遗留函数；CosyVoice HTTP 模式下不再使用字幕裁切。
+// addSentencePauses 是旧字幕对齐流程遗留函数；在线 TTS 模式下不再使用字幕裁切。
 // 必须映射回原文位置，前端才能与 renderSentences 的 w.start/w.end 对齐。
 function buildTextMapping(originalText, modifiedText) {
   const mapping = new Array(modifiedText.length).fill(-1);
