@@ -353,8 +353,8 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_qwen_tts_v2_api_params';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_qwen_tts_v2';
+const ALIGN_SCHEMA_VERSION = 'ct_qwen_tts_v3_explicit_model';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_qwen_tts_v3';
 const QWEN_TTS_LANGUAGE_TYPE = 'Chinese';
 const AUTO_PREWARM_TEACHING_ASSETS = false;
 const ONLINE_CHAR_AUDIO_ENABLED = true;
@@ -1856,6 +1856,9 @@ async function fetchPreprocessChunk(chunk, label) {
     body: JSON.stringify({
       text: chunk,
       voice: ttsVoice,
+      model: TEACHING_ASSET_MODEL,
+      format: TEACHING_ASSET_FORMAT,
+      sample_rate: 24000,
       ...onlineTtsParamsForVoice(ttsVoice)
     }),
   }, label);
@@ -1900,6 +1903,9 @@ async function fetchPreprocessClip(text) {
     body: JSON.stringify({
       text,
       voice: ttsVoice,
+      model: TEACHING_ASSET_MODEL,
+      format: TEACHING_ASSET_FORMAT,
+      sample_rate: 24000,
       ...onlineTtsParamsForVoice(ttsVoice)
     }),
   }, 'preprocess-clip');
@@ -2549,6 +2555,11 @@ preprocessBtn.addEventListener('click', async () => {
         sources: sourceCount,
         firstMissing,
         subtitleDebug: pd.subtitle_debug || [],
+        provider: pd.provider || '',
+        voice: pd.voice || '',
+        model: pd.model || '',
+        requestText: pd.request_text || '',
+        parameters: pd.parameters || null,
         fromCache: chunkFromCache,
         chunkCacheKey: chunkCacheKey.slice(0, 18)
       };
@@ -3056,7 +3067,9 @@ function buildDebugReport() {
       volume: parseFloat(volumeRange.value),
       cacheAvailable,
       teachingAssetPrewarm: teachingAssetPrewarmState,
-      languageType: QWEN_TTS_LANGUAGE_TYPE
+      languageType: QWEN_TTS_LANGUAGE_TYPE,
+      ttsModel: TEACHING_ASSET_MODEL,
+      ttsFormat: TEACHING_ASSET_FORMAT
     },
     input: {
       length: charLen(inputEl.value || ''),
