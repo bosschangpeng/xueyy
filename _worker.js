@@ -1716,6 +1716,7 @@ export default {
       const voice = normalizeQwenVoice(url.searchParams.get('voice') || env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE);
       const model = normalizeQwenModel(url.searchParams.get('model') || env.QWEN_TTS_MODEL || QWEN_TTS_DEFAULT_MODEL);
       const languageType = url.searchParams.get('language_type') || env.QWEN_TTS_LANGUAGE_TYPE || 'Chinese';
+      const target = String(url.searchParams.get('target') || '').trim();
       const instructions = String(url.searchParams.get('instructions') || '').trim();
       const optimizeInstructions = url.searchParams.get('optimize_instructions') === '1' || url.searchParams.get('optimize') === '1';
       let section = '';
@@ -1734,8 +1735,31 @@ export default {
         let bin = '';
         for (const b of wavBytes) bin += String.fromCharCode(b);
         const audioDebug = getAudioDebug(wavBytes);
+        let clipHtml = '';
+        let clip = null;
+        if (target) {
+          const chars = Array.from(pd.text || text || '');
+          const targetChars = Array.from(target);
+          let idx = -1;
+          for (let i = 0; i <= chars.length - targetChars.length; i++) {
+            let ok = true;
+            for (let j = 0; j < targetChars.length; j++) if (chars[i + j] !== targetChars[j]) ok = false;
+            if (ok) { idx = i; break; }
+          }
+          const first = idx >= 0 ? pd.char_time?.[idx] : null;
+          const last = idx >= 0 ? pd.char_time?.[idx + targetChars.length - 1] : null;
+          if (first && last && last[1] > first[0]) {
+            const clipped = cropWavByMs(wavBytes, first[0], last[1], 140, 240, { minDurationMs: 520, tailSilenceToMs: 900 });
+            let cbin = '';
+            for (const b of clipped) cbin += String.fromCharCode(b);
+            clipHtml = `<h3>目标裁切：${escapeHtml(target)}</h3><audio controls src="data:audio/wav;base64,${btoa(cbin)}"></audio>`;
+            clip = { target, index: idx, begin_time: first[0], end_time: last[1], source: pd.char_source?.[idx] || '', group: pd.char_group?.[idx] || '', bytes: clipped.length, audioDebug: getAudioDebug(clipped) };
+          } else {
+            clip = { target, index: idx, error: 'target char_time not found' };
+          }
+        }
         const summary = {
-          request: { text, voice, model, language_type: languageType, instructions: instructions || undefined, optimize_instructions: optimizeInstructions },
+          request: { text, target: target || undefined, voice, model, language_type: languageType, instructions: instructions || undefined, optimize_instructions: optimizeInstructions },
           response: {
             text: pd.text,
             provider: pd.provider,
@@ -1755,13 +1779,14 @@ export default {
             char_time: pd.char_time,
             char_source: pd.char_source,
             char_group: pd.char_group,
+            clip,
           },
         };
-        section = `<section><h3>完整预处理音频</h3><audio controls src="data:audio/wav;base64,${btoa(bin)}"></audio><pre>${escapeHtml(JSON.stringify(summary, null, 2))}</pre></section>`;
+        section = `<section><h3>完整预处理音频</h3><audio controls src="data:audio/wav;base64,${btoa(bin)}"></audio>${clipHtml}<pre>${escapeHtml(JSON.stringify(summary, null, 2))}</pre></section>`;
       } catch (e) {
-        section = `<section><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: { text, voice, model, language_type: languageType } }, null, 2))}</pre></section>`;
+        section = `<section><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: { text, target: target || undefined, voice, model, language_type: languageType } }, null, 2))}</pre></section>`;
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen 预处理时间线实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:980px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>Qwen 预处理时间线实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="整句/载体文本"><input name="voice" value="${escapeAttr(voice)}" placeholder="voice"><input name="model" value="${escapeAttr(model)}" placeholder="model"><input name="language_type" value="${escapeAttr(languageType)}" placeholder="language_type"><input name="instructions" value="${escapeAttr(instructions)}" placeholder="instructions"><label><input type="checkbox" name="optimize_instructions" value="1" ${optimizeInstructions ? 'checked' : ''}> optimize</label><button>生成</button></form><p>这里调用真实 <code>/preprocess</code> 主链路：Qwen 合成整句 WAV，再用本地能量时间线生成 <code>char_time</code>。</p>${section}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen 预处理时间线实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:980px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>Qwen 预处理时间线实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="整句/载体文本"><input name="target" value="${escapeAttr(target)}" placeholder="裁切目标"><input name="voice" value="${escapeAttr(voice)}" placeholder="voice"><input name="model" value="${escapeAttr(model)}" placeholder="model"><input name="language_type" value="${escapeAttr(languageType)}" placeholder="language_type"><input name="instructions" value="${escapeAttr(instructions)}" placeholder="instructions"><label><input type="checkbox" name="optimize_instructions" value="1" ${optimizeInstructions ? 'checked' : ''}> optimize</label><button>生成</button></form><p>这里调用真实 <code>/preprocess</code> 主链路：Qwen 合成整句 WAV，再用本地能量时间线生成 <code>char_time</code>；填写 <code>target</code> 会直接按该时间线裁切试听。</p>${section}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
