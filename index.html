@@ -2881,6 +2881,25 @@ function clipDebugWindow(clip, start, end, radius = 3) {
   return selectedCharWindow(start, end, clip, radius);
 }
 
+function debugPreprocessUrlForSelection(selection = debugLastSelection) {
+  if (!selection || selection.si == null) return null;
+  const s = currentSentences[selection.si];
+  if (!s?.text) return null;
+  const params = new URLSearchParams({
+    text: s.text,
+    voice: ttsVoice,
+    model: TEACHING_ASSET_MODEL,
+  });
+  if (selection.kind === 'word' && selection.wi != null) {
+    const w = s.words?.[selection.wi];
+    if (w?.text && Number.isFinite(w.start)) {
+      params.set('target', w.text);
+      params.set('target_index', String(Math.max(0, w.start - s.start)));
+    }
+  }
+  return '/debug-preprocess?' + params.toString();
+}
+
 function routePlanForSelection(selection = debugLastSelection) {
   if (!selection || selection.kind !== 'word' || selection.si == null || selection.wi == null) return null;
   const si = selection.si, wi = selection.wi;
@@ -3097,6 +3116,7 @@ function buildDebugReport() {
       timing: debugLastSelection.start != null ? timingInfoForRange(debugLastSelection.start, debugLastSelection.end) : null,
       charWindow: debugLastSelection.start != null ? selectedCharWindow(debugLastSelection.start, debugLastSelection.end) : [],
       routePlan: routePlanForSelection(debugLastSelection),
+      debugPreprocessUrl: debugPreprocessUrlForSelection(debugLastSelection),
       playbackTrace: playbackTraceForToken(debugLastSelection.token)
     } : null,
     events: debugEvents.slice(-DEBUG_MAX_EVENTS)
