@@ -1571,6 +1571,17 @@ export default {
         results.push('audio: ' + out.bytes.length + ' bytes');
         results.push('model: ' + out.model);
         results.push('voice: ' + out.voice);
+        results.push('requestText: ' + out.requestText);
+        results.push('provider: ' + out.provider);
+        results.push('format: ' + out.format);
+        results.push('events: ' + out.events.join(','));
+        results.push('audioDebug: ' + JSON.stringify(out.audioDebug));
+        results.push('params: ' + JSON.stringify({
+          endpoint: out.parameters?.endpoint,
+          audio_url: out.parameters?.audio_url,
+          audio_content_type: out.parameters?.audio_content_type,
+          language_type: out.parameters?.language_type,
+        }));
       } catch (e) {
         results.push('ERR: ' + e.message);
       }
