@@ -2139,6 +2139,10 @@ function isContextRangeReliable(clip, start, end) {
   return contextRangeReliability(clip, start, end).ok;
 }
 
+function isQwenSpeechTimelineSource(source) {
+  return source === 'qwen_segment_est' || source === 'qwen_run_est' || source === 'qwen_char_est';
+}
+
 function contextRangeReliability(clip, start, end, opts = {}) {
   if (!clip?.charTime || !clip?.charSource) return { ok: false, reason: 'missing-timing-arrays' };
   if (start < 0 || end > clip.charTime.length || end <= start) return { ok: false, reason: 'bad-target-range' };
@@ -2150,7 +2154,8 @@ function contextRangeReliability(clip, start, end, opts = {}) {
   const itemGroups = new Set();
   for (let i = start; i < end; i++) {
     if (!clip.charTime[i]) return { ok: false, reason: 'missing-char-time', index: i };
-    if (!allowed.has(clip.charSource[i])) return { ok: false, reason: 'source-not-direct', index: i, source: clip.charSource[i] || '' };
+    const source = clip.charSource[i] || '';
+    if (!allowed.has(source) && !isQwenSpeechTimelineSource(source)) return { ok: false, reason: 'source-not-direct', index: i, source };
     if (clip.charTime[i][1] <= clip.charTime[i][0]) return { ok: false, reason: 'non-positive-duration', index: i };
     if (clip.charSource[i] === 'word') {
       if (!groups[i]) return { ok: false, reason: 'missing-word-group', index: i };
@@ -2827,7 +2832,7 @@ function timingClassForRange(startChar, endChar) {
   if (!songData?.charTime) return 'dbg-unknown';
   const info = timingInfoForRange(startChar, endChar);
   if (info.missing.length || info.covered < info.total) return 'dbg-missing';
-  const weak = ['gap', 'lead', 'tail', 'item', 'word_est', 'unknown'];
+  const weak = ['gap', 'lead', 'tail', 'item', 'word_est', 'unknown', 'qwen_segment_est', 'qwen_run_est', 'qwen_char_est', 'qwen_punct_gap'];
   return weak.some(s => info.sources[s]) ? 'dbg-est' : 'dbg-direct';
 }
 
@@ -2949,7 +2954,7 @@ function analyzeAlignment() {
   const short = [];
   const overlap = [];
   const groupBoundary = [];
-  const weakSources = new Set(['gap', 'lead', 'tail', 'item', 'word_est', 'unknown']);
+  const weakSources = new Set(['gap', 'lead', 'tail', 'item', 'word_est', 'unknown', 'qwen_segment_est', 'qwen_run_est', 'qwen_char_est', 'qwen_punct_gap']);
   let prevEnd = null;
 
   for (let i = 0; i < chars.length; i++) {
