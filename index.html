@@ -1408,7 +1408,7 @@ function contextualJyutpingOverride(text, context = {}) {
   return null;
 }
 
-function miniMaxTeachingText(text) {
+function qwenTeachingText(text) {
   return compactTtsText(text);
 }
 
@@ -1420,7 +1420,7 @@ function teachingAssetForWord(w, context = {}) {
   const override = contextualJyutpingOverride(w.text, context);
   const jyutping = override?.jyutping || jyutpingForTeachingText(normalizedText);
   const syllables = normalizeJyutpingSyllables(jyutping);
-  let requestText = miniMaxTeachingText(w.text);
+  let requestText = qwenTeachingText(w.text);
   let pronunciationTone = pronunciationToneForText(normalizedText, jyutping);
   let pronunciationMode = pronunciationTone ? 'pronunciation_dict' : 'none';
   let pronunciationDict = pronunciationTone ? { tone: [pronunciationTone] } : null;
