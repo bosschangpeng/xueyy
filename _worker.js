@@ -202,11 +202,27 @@ function parseCosySseAudio(text) {
 
 function getAudioDebug(bytes) {
   const head = Array.from(bytes || []).slice(0, 16);
-  return {
+  const info = {
     bytes: bytes?.length || 0,
     hex: head.map(b => b.toString(16).padStart(2, '0')).join(' '),
     ascii: head.map(b => (b >= 32 && b <= 126) ? String.fromCharCode(b) : '.').join(''),
   };
+  const wav = bytes?.length ? parseWavInfo(bytes) : null;
+  if (wav) {
+    info.wav = {
+      audioFormat: wav.audioFormat,
+      channels: wav.channels,
+      sampleRate: wav.sampleRate,
+      bitsPerSample: wav.bitsPerSample,
+      blockAlign: wav.blockAlign,
+      dataOffset: wav.dataOffset,
+      dataSize: wav.dataSize,
+      declaredDataSize: wav.declaredDataSize,
+      riffSize: wav.riffSize,
+      durationMs: Math.round(wav.dataSize / (wav.sampleRate * wav.blockAlign / 1000)),
+    };
+  }
+  return info;
 }
 
 function validateAudioBytes(bytes, format, provider = 'TTS') {
@@ -233,7 +249,7 @@ function parseWavInfo(bytes) {
   if (readAscii(bytes, 0, 4) !== 'RIFF' || readAscii(bytes, 8, 4) !== 'WAVE') return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let pos = 12;
-  const info = { audioFormat: 0, channels: 0, sampleRate: 0, bitsPerSample: 0, blockAlign: 0, dataOffset: 0, dataSize: 0 };
+  const info = { audioFormat: 0, channels: 0, sampleRate: 0, bitsPerSample: 0, blockAlign: 0, dataOffset: 0, dataSize: 0, declaredDataSize: 0, riffSize: view.getUint32(4, true) };
   while (pos + 8 <= bytes.length) {
     const id = readAscii(bytes, pos, 4);
     const size = view.getUint32(pos + 4, true);
@@ -246,6 +262,7 @@ function parseWavInfo(bytes) {
       info.bitsPerSample = view.getUint16(dataPos + 14, true);
     } else if (id === 'data') {
       info.dataOffset = dataPos;
+      info.declaredDataSize = size;
       info.dataSize = size;
     }
     pos = dataPos + size + (size % 2);
