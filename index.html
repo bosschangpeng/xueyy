@@ -353,11 +353,9 @@ function isPlaybackCurrent(token) {
 
 // 整首歌 PCM 缓存
 let songData = null; // { pcm, charTime, sr, ch, bits, text }
-const ALIGN_SCHEMA_VERSION = 'ct_qwen_tts_v1_energy_timeline';
-const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_qwen_tts_v1';
-const QWEN_TTS_PREPROCESS_SPEED = 1.0;
-const TEACHING_CHAR_SPEED = 0.78;
-const TEACHING_WORD_SPEED = 0.82;
+const ALIGN_SCHEMA_VERSION = 'ct_qwen_tts_v2_api_params';
+const TEACHING_ASSET_SCHEMA_VERSION = 'teaching_asset_qwen_tts_v2';
+const QWEN_TTS_LANGUAGE_TYPE = 'Chinese';
 const AUTO_PREWARM_TEACHING_ASSETS = false;
 const ONLINE_CHAR_AUDIO_ENABLED = true;
 const ONLINE_CHAR_AUDIO_MODE = 'direct';
@@ -555,7 +553,6 @@ function teachingAssetCacheKey(asset) {
     asset.targetCharIndex ?? '',
     asset.pronunciationTone || '',
     asset.model,
-    asset.speed,
     asset.format,
     asset.pauseStrategy
   ].join('|'));
@@ -569,7 +566,6 @@ function teachingAssetSourceCacheKey(asset) {
     asset.requestText || '',
     asset.pronunciationTone || '',
     asset.model,
-    asset.speed,
     asset.format
   ].join('|'));
 }
@@ -580,7 +576,7 @@ function preprocessChunkCacheKey(text) {
     ttsVoice,
     'preprocess-v1',
     TEACHING_ASSET_MODEL,
-    String(QWEN_TTS_PREPROCESS_SPEED),
+    QWEN_TTS_LANGUAGE_TYPE,
     text
   ].join('|'));
 }
@@ -1272,8 +1268,9 @@ function ttsInstructionForVoice(_voice) {
 }
 
 function onlineTtsParamsForVoice(_voice, opts = {}) {
-  const params = {};
-  if (opts.speed != null) params.speed = opts.speed;
+  const params = { language_type: QWEN_TTS_LANGUAGE_TYPE };
+  if (opts.instructions) params.instructions = opts.instructions;
+  if (opts.optimize_instructions != null) params.optimize_instructions = !!opts.optimize_instructions;
   return params;
 }
 
@@ -1284,12 +1281,10 @@ async function fetchTtsFromProvider(text) {
     body: JSON.stringify({
       text,
       voice: ttsVoice,
-      speed: 0.9,
       ...onlineTtsParamsForVoice(ttsVoice),
       model: TEACHING_ASSET_MODEL,
       format: 'wav',
-      sample_rate: 24000,
-      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+      sample_rate: 24000
     }),
   }, 'tts-clip');
   if (!resp.ok) {
@@ -1460,7 +1455,6 @@ function teachingAssetForWord(w, context = {}) {
     sourceMode,
     targetCharIndex,
     model: TEACHING_ASSET_MODEL,
-    speed: type === 'char' ? TEACHING_CHAR_SPEED : TEACHING_WORD_SPEED,
     format: TEACHING_ASSET_FORMAT,
     pauseStrategy: pronunciationMode
   };
@@ -1497,7 +1491,6 @@ function teachingContextAssetForChar(w, context = {}) {
     targetCharIndex: null,
     playbackKind: 'char_context',
     model: TEACHING_ASSET_MODEL,
-    speed: TEACHING_WORD_SPEED,
     format: TEACHING_ASSET_FORMAT,
     pauseStrategy: pronunciationMode
   };
@@ -1611,11 +1604,8 @@ async function ensureCarrierSourceCached(asset) {
     body: JSON.stringify({
       text: asset.requestText,
       voice: ttsVoice,
-      speed: asset.speed,
       model: asset.model,
-      language_hints: ['zh'],
       ...onlineTtsParamsForVoice(ttsVoice),
-      instruction: ttsInstructionForVoice(ttsVoice) || undefined,
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1685,13 +1675,10 @@ async function fetchTeachingTtsFromProvider(asset) {
     body: JSON.stringify({
       text: asset.requestText || asset.normalizedText,
       voice: ttsVoice,
-      speed: asset.speed,
       model: asset.model,
       format: asset.format,
       sample_rate: 24000,
       ...onlineTtsParamsForVoice(ttsVoice),
-      instruction: ttsInstructionForVoice(ttsVoice) || undefined,
-      language_hints: ['zh'],
     }),
   }, `teaching-${asset.type}`);
   if (!resp.ok) {
@@ -1715,7 +1702,7 @@ async function ensureTeachingAssetCached(asset, opts = {}) {
     debugLog('teaching-asset:missing-cache', { type: asset.type, playbackKind: asset.playbackKind || '', text: asset.text, displayText: asset.displayText || '', targetText: asset.targetText || '', normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, targetJyutping: asset.targetJyutping || '', pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, cacheKey: cacheKey.slice(0, 18), prewarm: teachingAssetPrewarmState });
     return { blob: null, cacheKey, fromCache: false, missing: true };
   }
-  debugLog('teaching-asset:fetch', { type: asset.type, playbackKind: asset.playbackKind || '', text: asset.text, displayText: asset.displayText || '', targetText: asset.targetText || '', normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, targetJyutping: asset.targetJyutping || '', pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, model: asset.model, speed: asset.speed });
+  debugLog('teaching-asset:fetch', { type: asset.type, playbackKind: asset.playbackKind || '', text: asset.text, displayText: asset.displayText || '', targetText: asset.targetText || '', normalizedText: asset.normalizedText, requestText: asset.requestText, jyutping: asset.jyutping, targetJyutping: asset.targetJyutping || '', pronunciationTone: asset.pronunciationTone, pronunciationMode: asset.pronunciationMode, sourceMode: asset.sourceMode, carrierReason: asset.carrierReason, pronunciationReason: asset.pronunciationReason, model: asset.model });
   blob = await fetchTeachingTtsFromProvider(asset);
   if (cacheAvailable) await ttsCache.set(cacheKey, blob);
   return { blob, cacheKey, fromCache: false };
@@ -1869,8 +1856,7 @@ async function fetchPreprocessChunk(chunk, label) {
     body: JSON.stringify({
       text: chunk,
       voice: ttsVoice,
-      ...onlineTtsParamsForVoice(ttsVoice, { speed: QWEN_TTS_PREPROCESS_SPEED }),
-      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+      ...onlineTtsParamsForVoice(ttsVoice)
     }),
   }, label);
   if (!resp.ok) {
@@ -1914,8 +1900,7 @@ async function fetchPreprocessClip(text) {
     body: JSON.stringify({
       text,
       voice: ttsVoice,
-      ...onlineTtsParamsForVoice(ttsVoice, { speed: QWEN_TTS_PREPROCESS_SPEED }),
-      instruction: ttsInstructionForVoice(ttsVoice) || undefined
+      ...onlineTtsParamsForVoice(ttsVoice)
     }),
   }, 'preprocess-clip');
   if (!resp.ok) {
@@ -3069,7 +3054,8 @@ function buildDebugReport() {
       rate: parseFloat(speedRange.value),
       volume: parseFloat(volumeRange.value),
       cacheAvailable,
-      teachingAssetPrewarm: teachingAssetPrewarmState
+      teachingAssetPrewarm: teachingAssetPrewarmState,
+      languageType: QWEN_TTS_LANGUAGE_TYPE
     },
     input: {
       length: charLen(inputEl.value || ''),

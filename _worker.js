@@ -695,6 +695,10 @@ function normalizeQwenModel(model) {
   return raw;
 }
 
+function isQwenInstructModel(model) {
+  return /qwen3-tts-instruct-flash/i.test(String(model || ''));
+}
+
 function normalizeQwenText(text) {
   const raw = String(text || '').trim();
   if (isSingleCjk(raw)) return raw + '\u3002';
@@ -733,14 +737,21 @@ async function qwenTts(env, body, opts = {}) {
   const requestText = normalizeQwenText(body.text);
   if (!requestText) throw ttsProviderError('Qwen TTS text is empty', 400);
   const generationUrl = qwenTtsGenerationUrl(env);
+  const instructions = String(body.instructions ?? body.instruction ?? opts.instructions ?? opts.instruction ?? '').trim();
+  const optimizeInstructions = body.optimize_instructions ?? opts.optimize_instructions;
+  const canUseInstructions = isQwenInstructModel(model);
   const payload = {
     model,
     input: {
       text: requestText,
       voice,
-      language_type: body.language_type || opts.language_type || 'Chinese',
+      language_type: body.language_type || opts.language_type || env.QWEN_TTS_LANGUAGE_TYPE || 'Chinese',
     },
   };
+  if (instructions && canUseInstructions) {
+    payload.input.instructions = instructions;
+    if (optimizeInstructions != null) payload.input.optimize_instructions = !!optimizeInstructions;
+  }
   const resp = await fetch(generationUrl, {
     method: 'POST',
     headers: {
@@ -780,6 +791,11 @@ async function qwenTts(env, body, opts = {}) {
     audio_url: audioUrl ? 'present' : '',
     audio_content_type: audioContentType,
     language_type: payload.input.language_type,
+    instructions_sent: !!payload.input.instructions,
+    instructions_ignored: !!instructions && !canUseInstructions ? 'model-not-instruct' : '',
+    optimize_instructions: payload.input.optimize_instructions ?? false,
+    request_id: data?.request_id || '',
+    usage: data?.usage || null,
   };
   return {
     data,
@@ -1482,6 +1498,10 @@ async function preprocessTts(env, body) {
     model,
     format: 'wav',
     sample_rate: sampleRate,
+    language_type: body?.language_type,
+    instructions: body?.instructions,
+    instruction: body?.instruction,
+    optimize_instructions: body?.optimize_instructions,
   });
   const wav = parseWavInfo(out.bytes);
   if (!wav) throw ttsProviderError('Qwen TTS 预处理仅支持 PCM WAV 输出', 502);
@@ -1581,6 +1601,11 @@ export default {
           audio_url: out.parameters?.audio_url,
           audio_content_type: out.parameters?.audio_content_type,
           language_type: out.parameters?.language_type,
+          instructions_sent: out.parameters?.instructions_sent,
+          instructions_ignored: out.parameters?.instructions_ignored,
+          optimize_instructions: out.parameters?.optimize_instructions,
+          request_id: out.parameters?.request_id,
+          usage: out.parameters?.usage,
         }));
       } catch (e) {
         results.push('ERR: ' + e.message);
@@ -1598,11 +1623,14 @@ export default {
       const jp = url.searchParams.get('jp') || 'syut3';
       const debugVoice = normalizeQwenVoice(url.searchParams.get('voice') || env.QWEN_TTS_VOICE || QWEN_TTS_DEFAULT_VOICE);
       const debugModel = normalizeQwenModel(url.searchParams.get('model') || env.QWEN_TTS_MODEL || QWEN_TTS_DEFAULT_MODEL);
+      const debugInstructions = String(url.searchParams.get('instructions') || '').trim();
+      const debugOptimizeInstructions = url.searchParams.get('optimize_instructions') === '1' || url.searchParams.get('optimize') === '1';
       const runAll = url.searchParams.get('all') === '1';
       const allowEnergyFallback = url.searchParams.get('fallback') === '1';
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}\u3002` : text;
-      const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
+      const debugControls = debugInstructions ? { instructions: debugInstructions, optimize_instructions: debugOptimizeInstructions } : {};
+      const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true, ...debugControls } : { text, ...debugControls };
       const alternateVoice = debugVoice === 'Rocky' ? 'Kiki' : 'Rocky';
       const variantBaseLabel = single ? `Qwen carrier: ${carrierText}` : 'Qwen TTS';
       const allVariants = [
@@ -1659,7 +1687,7 @@ export default {
           rows.push(`<section><h3>${escapeHtml(v.label)}</h3><pre class="err">${escapeHtml(JSON.stringify({ error: e.message, request: v.body }, null, 2))}</pre></section>`);
         }
       }
-      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen TTS 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>Qwen TTS 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><button>生成</button></form><p>目标：默认只跑一组以节省费用。Qwen TTS 没有原生 words 时间戳，裁切使用整句音频的本地能量时间线；加 <code>fallback=1</code> 可查看能量裁切实验。</p>${rows.join('')}`;
+      const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen TTS 发音实测</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:880px;margin:28px auto;padding:0 16px;line-height:1.55;color:#1f2d3d}section{border:1px solid #dde4ef;border-radius:8px;padding:16px;margin:14px 0;background:#fff}audio{width:100%;margin:8px 0}pre{white-space:pre-wrap;background:#f6f8fb;padding:12px;border-radius:6px;overflow:auto}.err{color:#b42318;background:#fff1f0}input{padding:8px 10px;margin:0 8px 8px 0;border:1px solid #cfd8e3;border-radius:6px}button{padding:8px 12px;border:0;border-radius:6px;background:#3778c2;color:#fff}</style><h1>Qwen TTS 发音实测</h1><form method="get"><input name="text" value="${escapeAttr(text)}" placeholder="字/词"><input name="py" value="${escapeAttr(py)}" placeholder="普通话拼音"><input name="jp" value="${escapeAttr(jp)}" placeholder="粤拼"><input name="voice" value="${escapeAttr(debugVoice)}" placeholder="voice"><input name="model" value="${escapeAttr(debugModel)}" placeholder="model"><input name="instructions" value="${escapeAttr(debugInstructions)}" placeholder="instructions"><label><input type="checkbox" name="optimize_instructions" value="1" ${debugOptimizeInstructions ? 'checked' : ''}> optimize</label><button>生成</button></form><p>目标：默认只跑一组以节省费用。Qwen TTS 没有原生 words 时间戳，裁切使用整句音频的本地能量时间线；<code>instructions</code> 只在 Instruct 模型发送；加 <code>fallback=1</code> 可查看能量裁切实验。</p>${rows.join('')}`;
       return new Response(html, { headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
@@ -1690,7 +1718,7 @@ export default {
         try {
           const body = request.method === 'POST'
             ? await request.json()
-            : { text: url.searchParams.get('text') || '', voice: url.searchParams.get('voice') || undefined, speed: Number(url.searchParams.get('speed') || 1) };
+            : { text: url.searchParams.get('text') || '', voice: url.searchParams.get('voice') || undefined, language_type: url.searchParams.get('language_type') || undefined };
           const out = await qwenTts(env, body);
           const audioFormat = out.format || body.format || 'wav';
           const contentType = audioFormat === 'wav' ? 'audio/wav' : (audioFormat === 'pcm' ? 'audio/L16' : (audioFormat === 'opus' ? 'audio/ogg' : 'audio/mpeg'));
