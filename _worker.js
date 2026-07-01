@@ -1592,10 +1592,11 @@ export default {
       const single = isSingleCjk(text);
       const carrierText = single ? `${text}\u3002` : text;
       const baseBody = single ? { text: carrierText, teaching_target: text, word_timestamp_enabled: true } : { text };
-      const allVariants = single ? [
-        { id: 'carrier', label: `Qwen carrier: ${carrierText}`, body: baseBody },
-      ] : [
-        { id: 'plain', label: 'Qwen TTS', body: { text } },
+      const alternateVoice = debugVoice === 'Rocky' ? 'Kiki' : 'Rocky';
+      const variantBaseLabel = single ? `Qwen carrier: ${carrierText}` : 'Qwen TTS';
+      const allVariants = [
+        { id: 'selected', label: `${variantBaseLabel} / ${debugVoice}`, voice: debugVoice, body: baseBody },
+        { id: 'alt-cantonese', label: `${variantBaseLabel} / ${alternateVoice}`, voice: alternateVoice, body: baseBody },
       ];
       const variants = runAll ? allVariants : [allVariants[0]];
       const rows = [];
@@ -1603,7 +1604,7 @@ export default {
         try {
           const out = await qwenTts(env, {
             ...v.body,
-            voice: debugVoice,
+            voice: v.voice || debugVoice,
             model: debugModel,
             format: 'wav',
             sample_rate: 24000,
