@@ -1979,10 +1979,11 @@ async function playAudioBlob(data, rate, token, debugMeta = {}) {
   }
 }
 
-async function speakOneCached(text, rate, token) {
+async function speakOneCached(text, rate, token, opts = {}) {
   if (!isPlaybackCurrent(token)) return false;
-  if (!onlineTtsEnabled) {
-    debugLog('fallback:offline-system', { route: 'speak-one-cached', text, token, reason: 'online-disabled' });
+  const allowOnlineFetch = opts.allowOnlineFetch !== false;
+  if (!onlineTtsEnabled || !allowOnlineFetch) {
+    debugLog('fallback:offline-system', { route: 'speak-one-cached', text, token, reason: onlineTtsEnabled ? 'online-fetch-disabled' : 'online-disabled' });
     const voice = await resolveVoice();
     if (!voice) return false;
     if (!isPlaybackCurrent(token)) return false;
@@ -3050,7 +3051,7 @@ function buildDebugReport() {
       alignVersion: ALIGN_SCHEMA_VERSION,
       teachingAssetVersion: TEACHING_ASSET_SCHEMA_VERSION,
       onlineCharAudioEnabled: ONLINE_CHAR_AUDIO_ENABLED,
-      charPlaybackPolicy: ONLINE_CHAR_AUDIO_ENABLED ? `provider-char-audio:${ONLINE_CHAR_AUDIO_MODE}` : 'char-context-audio',
+      charPlaybackPolicy: ONLINE_CHAR_AUDIO_ENABLED ? `sentence-timeline-primary; cached-teaching-asset:${ONLINE_CHAR_AUDIO_MODE}` : 'sentence-timeline-primary; system-fallback',
       rate: parseFloat(speedRange.value),
       volume: parseFloat(volumeRange.value),
       cacheAvailable,
@@ -3392,18 +3393,12 @@ async function playWord(si, wi) {
   if (tiles?.[wi]) tiles[wi].classList.add('playing');
   if (onlineTtsEnabled && !songData) {
     const rate = parseFloat(speedRange.value);
-    const wLen = charLen(w.text);
-    if (wLen <= 1 && !ONLINE_CHAR_AUDIO_ENABLED) {
-      const contextOk = await playTeachingContextForChar(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'char-context-audio', ok: contextOk, token, provider: 'qwen-tts', charMode: ONLINE_CHAR_AUDIO_MODE });
-      if (contextOk) return;
-    } else {
-      const assetOk = await playTeachingAssetForWord(w, rate, token, { sentence: s, si, wi }, { allowFetch: true });
-      if (!isPlaybackCurrent(token)) return;
-      debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: wLen <= 1 ? 'char-audio' : 'word-audio', ok: assetOk, token, provider: 'qwen-tts', charMode: ONLINE_CHAR_AUDIO_MODE });
-      if (assetOk) return;
-    }
+    debugLog('play:route-skip', { kind: 'word', si, wi, text: w.text, route: 'provider-word-audio', reason: 'missing-sentence-timeline', token, provider: 'qwen-tts' });
+    statusBar.textContent = '请先预处理生成句子时间线，当前临时使用系统语音';
+    const ok = await speakOneCached(w.text, rate, token, { allowOnlineFetch: false });
+    if (!isPlaybackCurrent(token)) return;
+    debugLog('play:route-result', { kind: 'word', si, wi, text: w.text, route: 'system-fallback-no-timeline', ok, token, provider: 'system' });
+    return;
   }
 
   if (onlineTtsEnabled && songData) {
@@ -3444,7 +3439,7 @@ async function playWord(si, wi) {
     return;
   }
   debugLog('play:fallback', { kind: 'word', si, wi, text: w.text, route: 'speak-one-cached', token });
-  await speakOneCached(w.text, parseFloat(speedRange.value), token);
+  await speakOneCached(w.text, parseFloat(speedRange.value), token, { allowOnlineFetch: !onlineTtsEnabled });
 }
 
 let savedOriginal = '';
